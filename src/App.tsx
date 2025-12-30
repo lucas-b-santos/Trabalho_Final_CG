@@ -1,103 +1,85 @@
 import { useEffect, useRef, useState } from 'react';
-import init, { SimpleEngine, init_panic_hook } from '../motor/pkg/';
+import init, { SoftwareRenderer, init_panic_hook } from '../motor/pkg/';
+
+const WIDTH = 800;
+const HEIGHT = 800;
 
 function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const engineRef = useRef<SimpleEngine | null>(null);
+  const engineRef = useRef<SoftwareRenderer | null>(null);
   // Precisamos de uma referência ao módulo WASM para acessar a memória
-  const wasmMemoryRef = useRef<WebAssembly.Memory | null>(null);
+  const wasmMemory = useRef<WebAssembly.Memory | null>(null);
+  const rotationRef = useRef({ x: 0, y: 0 });
+  const needsRender = useRef(true);
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (e.buttons === 1) {
+      rotationRef.current.x += e.movementY;
+      rotationRef.current.y += e.movementX;
+      console.log(`Mouse Move: ${e.movementX}, ${e.movementY}`);
+      needsRender.current = true;
+    }
+  };
 
   useEffect(() => {
     let animId: number;
-    let isActive = true; // Flag para evitar executar se o componente desmontar
+    let ctx: CanvasRenderingContext2D | null;
+    let bufferPtr: number;
+    let array: Uint8ClampedArray<ArrayBuffer>;
+    let imageData: ImageData;
+
+    try {
+      init_panic_hook();
+    } catch (e) {
+      console.log("Panic hook já inicializado");
+    }
 
     const startApp = async () => {
-      // 1. Aguarda o carregamento do WASM
+      // Aguarda o carregamento do WASM
       const wasmModule = await init();
+      engineRef.current = new SoftwareRenderer(WIDTH, HEIGHT);
+      wasmMemory.current = wasmModule.memory;
 
-      // Se o componente desmontou enquanto carregava, para tudo.
-      if (!isActive) return;
-      if (!canvasRef.current) return;
+      const tick = () => {
+        // Só gasta CPU do Rust se for necessário
+        if (needsRender.current && engineRef.current && canvasRef.current) {
 
-      // 2. Instancia a Engine e Pega a Memória
-      engineRef.current = new SimpleEngine();
-      wasmMemoryRef.current = wasmModule.memory;
+          // A. Chama o Rust (Pesado)
+          engineRef.current.render_frame(rotationRef.current.x, rotationRef.current.y);
 
-      const ctx = canvasRef.current.getContext('2d');
-      if (!ctx) return;
+          // B. Copia para o Canvas (Pesado)
+          ctx = canvasRef.current.getContext('2d');
+          bufferPtr = engineRef.current.get_color_ptr();
+          array = new Uint8ClampedArray(
+            wasmMemory.current!.buffer,
+            bufferPtr,
+            WIDTH * HEIGHT * 4
+          );
 
-      // Definição das arestas (Topologia do Cubo)
-      const edges = [
-        [0, 1], [1, 2], [2, 3], [3, 0],
-        [4, 5], [5, 6], [6, 7], [7, 4],
-        [0, 4], [1, 5], [2, 6], [3, 7]
-      ];
+          imageData = new ImageData(array, WIDTH, HEIGHT);
 
-      let angle = 0;
+          ctx?.putImageData(imageData, 0, 0);
 
-      // 3. Define o Loop de Renderização
-      const renderLoop = () => {
-        if (!isActive) return;
+          // C. Desliga a flag
+          needsRender.current = false;
+        }
 
-        // Atualiza lógica
-        angle += 0.02;
-        const width = canvasRef.current!.width;
-        const height = canvasRef.current!.height;
-
-        const engine = engineRef.current!;
-        engine.update(angle, width, height);
-
-        // Acessa memória (Zero-Copy)
-        const dataPtr = engine.get_buffer_ptr();
-        const dataSize = engine.get_buffer_size();
-        const wasmCells = new Float64Array(
-          wasmMemoryRef.current!.buffer,
-          dataPtr,
-          dataSize
-        );
-
-        // Desenha
-        ctx.clearRect(0, 0, width, height);
-        ctx.strokeStyle = 'black';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-
-        edges.forEach(([start, end]) => {
-          // Multiplicamos por 2 pois cada ponto tem X e Y
-          const x1 = wasmCells[start * 2];
-          const y1 = wasmCells[start * 2 + 1];
-          const x2 = wasmCells[end * 2];
-          const y2 = wasmCells[end * 2 + 1];
-
-          ctx.moveTo(x1, y1);
-          ctx.lineTo(x2, y2);
-        });
-        ctx.stroke();
-
-        // Agenda o próximo quadro
-        animId = requestAnimationFrame(renderLoop);
+        // Continua checando no próximo frame (baixo custo se needsRender for false)
+        animId = requestAnimationFrame(tick);
       };
 
-      // 4. Inicia o Loop
-      renderLoop();
+      tick();
     };
 
     startApp();
 
-    // Função de Limpeza (Cleanup)
-    return () => {
-      isActive = false;
-      if (animId) cancelAnimationFrame(animId);
-      // Opcional: Se quiser liberar memória do Rust explicitamente:
-      if (engineRef.current) engineRef.current.free();
-    };
-  }, []); // Executa apenas uma vez na montagem
+    return () => cancelAnimationFrame(animId);
+  }, []);
 
   return (
     <div style={{ textAlign: 'center' }}>
-      <h1>Wireframe 3D via Rust</h1>
-      <canvas ref={canvasRef} width={600} height={400} style={{ border: '1px solid #ccc' }} />
-      <p>Cálculos de projeção feitos em WASM. Renderização no Canvas 2D.</p>
+      <h1>{WIDTH} x {HEIGHT}</h1>
+      <canvas onMouseMove={handleMouseMove} ref={canvasRef} width={WIDTH} height={HEIGHT} style={{ border: '1px solid #ccc' }} />
     </div>
   );
 }

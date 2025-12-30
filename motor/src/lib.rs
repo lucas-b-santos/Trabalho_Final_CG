@@ -1,6 +1,10 @@
 use wasm_bindgen::prelude::*;
+extern crate nalgebra as na;
 
-// Ativa o hook de pânico para melhor depuração no console do navegador
+pub mod pipeline;
+
+use na::{SVector};
+
 extern crate console_error_panic_hook;
 use std::panic;
 
@@ -9,74 +13,74 @@ pub fn init_panic_hook() {
     panic::set_hook(Box::new(console_error_panic_hook::hook));
 }
 
-// Representa um ponto no espaço 3D
-#[derive(Clone, Copy)]
-struct Point3D { x: f64, y: f64, z: f64 }
-
-#[wasm_bindgen]
-pub struct SimpleEngine {
-    points: Vec<Point3D>,
-    // NOVO: Um buffer persistente para guardar o resultado 2D
-    render_buffer: Vec<f64>, 
+// Dados que vão ser usados como índice PRECISAM SER USIZE
+struct Obj {
+    x: SVector<usize, 8>,
+    y: SVector<usize, 8>,
 }
 
 #[wasm_bindgen]
-impl SimpleEngine {
+pub struct SoftwareRenderer {
+    width: usize,
+    height: usize,
+    obj: Obj,
+    // Buffer de cor: 1 inteiro = 4 bytes (R, G, B, A)
+    color_buffer: Vec<u32>,
+    // Z-Buffer: guarda a profundidade (1.0 = perto, 100.0 = longe, etc)
+    z_buffer: Vec<f32>,
+}
+
+#[wasm_bindgen]
+impl SoftwareRenderer {
     #[wasm_bindgen(constructor)]
-    pub fn new() -> SimpleEngine {
-        let points = vec![
-            Point3D { x: -1.0, y: -1.0, z: -1.0 },
-            Point3D { x:  1.0, y: -1.0, z: -1.0 },
-            Point3D { x:  1.0, y:  1.0, z: -1.0 },
-            Point3D { x: -1.0, y:  1.0, z: -1.0 },
-            Point3D { x: -1.0, y: -1.0, z:  1.0 },
-            Point3D { x:  1.0, y: -1.0, z:  1.0 },
-            Point3D { x:  1.0, y:  1.0, z:  1.0 },
-            Point3D { x: -1.0, y:  1.0, z:  1.0 },
-        ];
+    pub fn new(width: usize, height: usize) -> SoftwareRenderer {
+        let size = width * height;
+        // Pixel é lido em little-endian: 0xAABBGGRR
+        let mut buffer: Vec<u32> = vec![0xFF000000; size];
         
-        // Pré-alocamos espaço para 8 pontos * 2 coordenadas (x, y) = 16 floats
-        // Isso evita re-alocação durante o loop
-        let render_buffer = Vec::with_capacity(16);
+        let obj = Obj {
+            x: SVector::from_row_slice(&[550, 670, 675, 550, 430, 550, 550, 425]),
+            y: SVector::from_row_slice(&[600, 658, 540, 485, 658, 721, 600, 540]),
+        };
 
-        SimpleEngine { points, render_buffer }
-    }
+        for i in 0..8 {
+            buffer[obj.y[i] * width + obj.x[i]] = 0xFFFFFFFF;
+        }
 
-    // Agora esta função NÃO retorna nada, ela apenas atualiza o buffer interno
-    pub fn update(&mut self, angle: f64, width: f64, height: f64) {
-        self.render_buffer.clear(); // Limpa os dados, mas mantém a memória alocada
-        
-        let fov = 300.0;
-        let distance = 4.0;
-
-        for p in &self.points {
-            let rot_x = p.x * angle.cos() - p.z * angle.sin();
-            let rot_z = p.x * angle.sin() + p.z * angle.cos();
-            let rot_y = p.y;
-
-            let mut z_camera = rot_z + distance;
-            
-            // Proteção contra divisão por zero (pode causar problemas no Canvas)
-            if z_camera.abs() < 0.001 { z_camera = 0.001; }
-
-            let mut px = (rot_x / z_camera) * fov;
-            let mut py = (rot_y / z_camera) * fov;
-
-            px += width / 2.0;
-            py += height / 2.0;
-
-            self.render_buffer.push(px);
-            self.render_buffer.push(py);
+        SoftwareRenderer {
+            width,
+            height,
+            obj,
+            color_buffer: buffer, // Preto, Alpha 255
+            z_buffer: vec![f32::INFINITY; size],  // Infinito (fundo)
         }
     }
 
-    // 1. Retorna o PONTEIRO de memória onde começa o buffer
-    pub fn get_buffer_ptr(&self) -> *const f64 {
-        self.render_buffer.as_ptr()
+    // Chamado no início de cada frame
+    pub fn clear(&mut self) {
+        // Reinicia as cores para preto (ou cor de fundo)
+        // fill é extremamente otimizado no Rust (usa memset)
+        self.color_buffer.fill(0xFF000000);
+
+        // Reinicia o Z-Buffer para "infinito"
+        self.z_buffer.fill(f32::INFINITY);
     }
 
-    // 2. Retorna o TAMANHO do buffer (quantos floats existem)
-    pub fn get_buffer_size(&self) -> usize {
-        self.render_buffer.len()
+    // Uma função que faz o frame completo de uma vez
+    pub fn render_frame(&mut self, dx: usize, dy: usize) {
+        self.clear(); // Limpa Z-Buffer e Cor
+
+        self.obj.x += SVector::<usize, 8>::from_element(dx);
+        self.obj.y += SVector::<usize, 8>::from_element(dy);
+
+        for i in 0..8 {
+            self.color_buffer[self.obj.y[i] * self.width + self.obj.x[i]] = 0xFFFFFFFF;
+        }
+
+        // ... Lógica de projeção, rasterização e phong ...
+    }
+
+    pub fn get_color_ptr(&self) -> *const u32 {
+        self.color_buffer.as_ptr()
     }
 }

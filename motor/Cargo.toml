@@ -14,11 +14,11 @@ console_error_panic_hook = "0.1"
 [dependencies.web-sys]
 version = "0.3"
 features = [
-  "Window",
-  "Document",
-  "HtmlCanvasElement",
-  "WebGl2RenderingContext",
-  "WebGlProgram",
-  "WebGlShader",
+  # "Window",
+  # "Document",
+  # "HtmlCanvasElement",
+  # "WebGl2RenderingContext",
+  # "WebGlProgram",
+  # "WebGlShader",
   "console", # Para debug no browser
 ]
