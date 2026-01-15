@@ -70,8 +70,17 @@ impl SoftwareRenderer {
     pub fn render_frame(&mut self, dx: usize, dy: usize) {
         self.clear(); // Limpa Z-Buffer e Cor
 
-        self.obj.x += SVector::<usize, 8>::from_element(dx);
-        self.obj.y += SVector::<usize, 8>::from_element(dy);
+        let dx = SVector::<usize, 8>::from_element(dx);
+        let dy = SVector::<usize, 8>::from_element(dy);
+
+        if (self.obj.x + dx).iter().any(|&x| x >= self.width) ||
+           (self.obj.y + dy).iter().any(|&y| y >= self.height) {
+            // Evita mover para fora da tela
+            return;
+        }
+
+        self.obj.x += dx;
+        self.obj.y += dy;
 
         for i in 0..8 {
             self.color_buffer[self.obj.y[i] * self.width + self.obj.x[i]] = 0xFFFFFFFF;

@@ -1,6 +1,6 @@
 extern crate nalgebra as na;
 
-use std::{f32::INFINITY, vec};
+use std::{f32::INFINITY};
 
 use na::{Matrix4, SMatrix, Vector3, Vector4};
 
@@ -12,8 +12,13 @@ macro_rules! value {
 
 #[derive(Debug, Clone, Copy)]
 struct Vertex {
-    cords: Vector4<f32>,
-    normal: Vector3<f32>, 
+    cords: Vector4<f32>, // cordenadas homogêneas do vértice
+    normal: Vector3<f32>, // vetor normal associado ao vértice
+}
+
+struct Face {
+    vertices: Vec<Vertex>, // Supondo que todas as faces são quadriláteros
+    idx: usize,          // Índice da face
 }
 
 type RawObj = SMatrix<f32, 4, 8>; // Matriz 4x8 para armazenar os pontos do objeto
@@ -50,11 +55,7 @@ where
                 
                 // 2. Interpola a Normal (Atributo) USANDO O MESMO t
                 let new_normal = prev.normal + (curr.normal - prev.normal) * t;
-                
-                // IMPORTANTE: A interpolação linear pode desnormalizar o vetor.
-                // É recomendável normalizá-lo novamente.
-                let new_normal = new_normal.normalize();
-
+               
                 output_list.push(Vertex { 
                     cords: new_pos, 
                     normal: new_normal 
@@ -70,7 +71,6 @@ where
 
             let new_pos = prev.cords + (curr.cords - prev.cords) * t;
             let new_normal = prev.normal + (curr.normal - prev.normal) * t;
-            let new_normal = new_normal.normalize();
             
             output_list.push(Vertex { 
                 cords: new_pos, 
@@ -173,6 +173,143 @@ fn create_vertex(index: usize, raw_obj: &RawObj, normals: &[Vector3<f32>; 8]) ->
             raw_obj[(3, index)],
         ),
         normal: normals[index]    
+    }
+}
+
+fn fillpolly(polygon: &[Vertex]) {
+
+    // obtém lista de coordenadas Y do polígono
+    let Y_cords = polygon.iter().map((cord) => cord.y); 
+
+    // obtém o menor e maior valor de Y do polígono
+    const Y_min_poly = Math.min(...Y_cords);
+    const Y_max_poly = Math.max(...Y_cords);
+
+    // calcula o número de scanlines
+    const Ns = Y_max_poly - Y_min_poly; 
+
+    // cria uma lista de scanlines, cada scanline é uma lista de pontos
+    // cada ponto é um objeto com coordenadas x e cor RGB
+    
+    const scanlines: ScanlineEntry[][] = Array.from({ length: Ns }, () => []);
+
+    // pixels é uma lista de listas, onde cada lista contém os pontos de uma scanline
+    const pixels: Point[][] = Array.from({ length: Ns }, () => []);
+
+    // Para cada aresta do polígono, calculamos os pontos de cada scanline
+    for (let i = 0; i < polygon.length; i++) {
+
+        // Aresta é formada por dois pontos consecutivos do polígono (a e b)
+        const a = polygon[i];
+        const b = polygon[(i + 1) % polygon.length]; // usamos índice circular p/ conectar o último ponto com o primeiro
+
+        // Aresta AB é uma lista de pontos [a, b]
+        const edge = [a, b].sort((a, b) => a.y - b.y); // ordenamos por coordenada Y
+        
+        // Verifica se a aresta é horizontal, se for, pula para a próxima iteração
+        if (edge[0].y === edge[1].y) continue;
+        
+        const Ymax = edge[1].y, Ymin = edge[0].y, Xmax = edge[1].x, Xmin = edge[0].x;
+
+        const variacao_y = Ymax - Ymin;
+
+        // Calcula a variação de X e RGB para cada scanline
+        const Tx = (Xmax - Xmin) / variacao_y;
+        const Tr = (edge[1].rgb[0] - edge[0].rgb[0]) / variacao_y;
+        const Tg = (edge[1].rgb[1] - edge[0].rgb[1]) / variacao_y;
+        const Tb = (edge[1].rgb[2] - edge[0].rgb[2]) / variacao_y;
+
+        // Inicializa valores RGB atuais com os valores do primeiro ponto da aresta
+        // Isso é necessário para interpolar a cor ao longo da aresta
+        let currentRGBValues = [edge[0].rgb[0], edge[0].rgb[1], edge[0].rgb[2]] as RGB;
+        let current: ScanlineEntry = { x: Xmin, color: currentRGBValues };
+
+        // Preenche as scanlines com os pontos da aresta
+        // Para cada scanline entre Ymin e Ymax, adiciona os pontos interpolados
+        // A cor também é interpolada ao longo da aresta
+        for (let ii = Ymin - Y_min_poly; ii < Ymax - Y_min_poly; ii++) {
+
+            // adiciona o valor de x e de RGB na scanline
+            scanlines[ii].push({ x: current.x, color: [...current.color] });
+
+            // incrementa as taxas
+            current.x += Tx;
+            current.color[0] += Tr;
+            current.color[1] += Tg;
+            current.color[2] += Tb;
+        }
+    }
+
+    // ordena os pontos de cada scanline por coordenada x
+    for (let i = 0; i < Ns; i++) scanlines[i].sort((a, b) => a.x - b.x);
+
+    // Y inicial
+    let current_y = Y_min_poly;
+
+    // Para cada scanline
+    for (let i = 0; i < Ns; i++) {
+
+        // Para cada par de pontos na scanline
+        for (let ii = 0; ii < scanlines[i].length; ii += 2) {
+
+            // obtemos a e b, um intervalo que deve ser preenchido
+            const a = scanlines[i][ii];
+            const b = scanlines[i][ii + 1];
+
+            // necessário para que a pintura respeite os limites do polígono
+            const Xmin = Math.ceil(a.x);
+            const Xmax = Math.floor(b.x);
+
+            const variacao_x = Xmax - Xmin;
+
+            // Variações de RGB naquele intervalo [a, b]
+            const Tr = (b.color[0] - a.color[0]) / variacao_x;
+            const Tg = (b.color[1] - a.color[1]) / variacao_x;
+            const Tb = (b.color[2] - a.color[2]) / variacao_x;
+
+            // inicialize pixels para a scanline atual
+            let currentR = a.color[0];
+            let currentG = a.color[1];
+            let currentB = a.color[2];
+
+            for (let iii = Xmin; iii <= Xmax; iii++) {
+
+                // ponto que deverá ser pintado e sua respectiva cor
+                const point: Point = {
+                    x: iii,
+                    y: current_y,
+                    rgb: [currentR, currentG, currentB]
+                }
+                pixels[i].push(point);
+
+                // incrementa com as variações calculadas
+                currentR += Tr;
+                currentG += Tg;
+                currentB += Tb;
+            }
+
+
+        }
+
+        current_y++;
+    }
+
+    for (let i = 0; i < pixels.length; i++) {
+        for (let j = 0; j < pixels[i].length; j++) {
+
+            // obtém cor do pixel a ser pintado
+            ctx.fillStyle =
+                "rgb(" +
+                Math.floor(pixels[i][j].rgb[0]) +
+                "," +
+                Math.floor(pixels[i][j].rgb[1]) +
+                "," +
+                Math.floor(pixels[i][j].rgb[2])
+            ")";
+
+            // pinta o pixel
+            ctx.fillRect(pixels[i][j].x, pixels[i][j].y, 1, 1);
+        }
     }
 }
 
@@ -299,7 +436,6 @@ fn main() {
         vertex_normals[vertex] = normal_sum.normalize();
     }
 
-    println!("Vertex Normals: {:?}", vertex_normals);
     // limites viewport 
     let u_min = 100.0;
     let v_min = 300.0;
@@ -401,32 +537,23 @@ fn main() {
         0.0, 0.0, 0.0,  1.0
     );
 
-    // matriz que normaliza para o volume de visão canônico (alvy ray smith)
-    let m_norm = mat_d * mat_c * mat_b * mat_a;
-
     // a ideia é 
     // 1. aplicar m_norm em raw_obj para obter os pontos no espaço normalizado
     // 2. realizar o recorte com sutherland-hodgman
     // 3. aplicar mat_p para projeção
     // 4. dividir pelo fator homogêneo
-    // 5. aplicar a transformação de viewport (mat_j, mat_k, mat_l, mat_m)
+    // 5. aplicar a transformação que leva p/ srt (mat_j, mat_k, mat_l, mat_m)
+
+    // matriz que normaliza para o volume de visão canônico (alvy ray smith)
+    let m_norm = mat_d * mat_c * mat_b * mat_a;
 
     // matriz que leva para cordenadas de tela
-    let m_src = mat_m * mat_l * mat_k * mat_j;
+    let m_srt = mat_m * mat_l * mat_k * mat_j;
 
     let p1 = m_norm * raw_obj;
 
-    // dividir pelo fator homogeneo
-    // for j in 0..mat_p.ncols() {
-    //     let h = mat_p[(3, j)];
-    //     for i in 0..mat_p.nrows() {
-    //         mat_p[(i, j)] /= h;
-    //     }
-    // }
-
     // criar um objeto de vetores nalgebra a partir da matriz bruta
     // isto é interessante para realizar cálculos de álgebra linear
-    // como no sutherland-hodgman ou cálculo de normais
     let mut obj = Vec::<[Vertex; 4]>::with_capacity(6);
 
     for face in faces.iter() {
@@ -438,13 +565,24 @@ fn main() {
         obj.push([v0, v1, v2, v3]);
     }
 
-    for face in visible_faces.iter() {
-        let original_poly = &obj[*face];
+    // let mut clipped_faces: Vec<Face> = Vec::with_capacity(6);
 
-        let clipped_poly = sutherland_hodgman(original_poly, near, far);
+    for face in visible_faces {
+        let original_poly = &obj[face];
 
-        println!("Face {}: Original Vertices: {}, Clipped Vertices: {}", *face, original_poly.len(), clipped_poly.len());
-        clipped_poly.iter().for_each();
+        let mut clipped_poly = sutherland_hodgman(original_poly, near, far);
+
+        println!("Face {}: Original Vertices: {}, Clipped Vertices: {}", face, original_poly.len(), clipped_poly.len());
+
+        for vertex in clipped_poly.iter_mut() {
+            vertex.cords = mat_p * vertex.cords;
+            vertex.cords /= vertex.cords.w; // Divisão pelo fator homogêneo (ele usa w no lugar do h)
+            vertex.cords = m_srt * vertex.cords;           
+            println!(" Vertex: Position: {:?}, Normal: {:?}", vertex.cords, vertex.normal);
+        }
+
+        // clipped_faces.push(Face { vertices: clipped_poly, idx: face });
     }
+
 
 }
