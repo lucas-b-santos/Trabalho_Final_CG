@@ -1,119 +1,343 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+
+extern crate nalgebra as na;
+use na::{Matrix4};
+
 use eframe::egui;
 use egui::{ColorImage, TextureHandle, Vec2};
 
+pub mod pipeline;
+use pipeline::{HEIGHT, WIDTH, render};
+use pipeline::types::{SceneParams, UCube, Face, ObjectTransform};
+
+pub mod utils;
+use utils::point_to_edge_distance;
+
 struct MyApp {
+    pixels: Vec<egui::Color32>,
+    z_buffer: Vec<u16>,
+    texture: Option<TextureHandle>,
     width: usize,
     height: usize,
-    pixels: Vec<egui::Color32>,
-    texture: Option<TextureHandle>,
-    // Adicionamos um contador simples para animação
-    frame_count: usize, 
+    cubes: Vec<UCube>,
+    s_cubes: Vec<Vec<Face>>,
+    obj_transform: ObjectTransform, // Transformações do objeto
+    selected_cube_index: Option<usize>, // Índice do cubo selecionado
+    hovered_cube_index: Option<usize>,  // Índice do cubo sob o mouse
+    scene: SceneParams,
+    mouse_in_buffer: Option<[f32; 2]>, // Posição do mouse na área de renderização
 }
 
 impl MyApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // Vamos usar 800x600 como base
-        let width = 800;
-        let height = 600;
+        let mut cubes = Vec::with_capacity(10);
+        let s_cubes = Vec::<Vec<Face>>::with_capacity(10);
+        cubes.push(UCube::default());
+
         Self {
-            width,
-            height,
-            // Inicializa com preto
-            pixels: vec![egui::Color32::BLACK; width * height], 
+            width: WIDTH,
+            height: HEIGHT,
+            mouse_in_buffer: None,
+            obj_transform: ObjectTransform::default(),
+            z_buffer: vec![u16::MAX; WIDTH * HEIGHT],
+            pixels: vec![egui::Color32::GRAY; WIDTH * HEIGHT],
             texture: None,
-            frame_count: 0,
+            cubes: cubes,
+            s_cubes: s_cubes,
+            selected_cube_index: None,
+            hovered_cube_index: None,
+            scene: SceneParams::default(),
         }
     }
 
-    fn render_scene(&mut self) {
-        self.frame_count = self.frame_count.wrapping_add(1);
-        let time_offset = self.frame_count as usize;
+    // Função auxiliar que varre a cena para achar quem está sob o mouse
+    // A lógica consiste em verificar qual aresta (entre todos os cubos) está mais próxima do mouse
+    fn check_hover(&self, mouse_pos: [f32; 2]) -> Option<usize> {
+        let mut found_idx = None;
+        let mut min_distance = f32::INFINITY;
 
-        // --- TESTE DE RASTERIZAÇÃO ---
-        // Percorre cada pixel e gera uma cor baseada na posição (X, Y) e no Tempo.
-        // Isso cria um padrão visual que confirma se o buffer está mapeado corretamente.
-        
-        for y in 0..self.height {
-            for x in 0..self.width {
-                // Índice linear do buffer
-                let index = y * self.width + x;
+        for (idx, cube) in self.s_cubes.iter().enumerate() {
 
-                // Lógica simples de teste visual:
-                // R: Baseado no X
-                // G: Baseado no Y
-                // B: Baseado no Tempo (para ver se está animando)
-                
-                let r = (x % 255) as u8;
-                let g = (y % 255) as u8;
-                
-                // Um padrão "alienígena" (XOR pattern) clássico de demoscene
-                // Se isso aparecer, sua escrita de memória está perfeita.
-                let pattern = ((x ^ y) + time_offset) % 255; 
-                let b = pattern as u8;
+            for face in cube.iter() {
+                let px = mouse_pos[0];
+                let py = mouse_pos[1];
 
-                self.pixels[index] = egui::Color32::from_rgb(r, g, b);
-            }
+                // Se o ponto não estiver dentro da face, pula para a próxima
+                if !face.is_point_in(px, py) { continue; }
+
+                for i in 0..face.vertices.len() {
+                    let x1 = face.vertices[i].cords.x;
+                    let y1 = face.vertices[i].cords.y;
+                    let x2 = face.vertices[(i + 1) % face.vertices.len()].cords.x;
+                    let y2 = face.vertices[(i + 1) % face.vertices.len()].cords.y;
+
+                    // Calcula a distância do ponto até a aresta atual
+                    let distance = point_to_edge_distance(
+                        [px, py],
+                        [x1, y1],
+                        [x2, y2],
+                    );
+
+                    if distance < min_distance {
+                        min_distance = distance;
+                        found_idx = Some(idx);
+                    }
+                }
+                }
+
         }
+        found_idx
+    }
+
+    fn render_scene(&mut self) {
+        // 1. Limpar buffer
+        self.pixels.fill(egui::Color32::GRAY);
+        self.z_buffer.fill(u16::MAX);
+        self.s_cubes.clear();
+
+        for (idx, cube) in self.cubes.iter().enumerate() {
+            let mut selected = false;
+
+            if let Some(sel_idx) = self.selected_cube_index {
+                if sel_idx == idx {
+                    selected = true; // destaca o cubo selecionado
+                }
+            } 
+
+            if let Some(hover_idx) = self.hovered_cube_index {
+                if hover_idx == idx {
+                    selected = true; // destaca o cubo sob o mouse
+                }
+            }
+    
+            let screen_cube = render(&mut self.pixels, &mut self.z_buffer, &self.scene, cube, selected, true);
+            self.s_cubes.push(screen_cube);
+        }
+
+    }
+
+    fn translate(&mut self, idx: usize) {
+        let dx = self.obj_transform.position.x;
+        let dy = self.obj_transform.position.y;
+        let dz = self.obj_transform.position.z;
+
+        let translation_matrix = Matrix4::new(
+            1.0, 0.0, 0.0, dx,
+            0.0, 1.0, 0.0, dy,
+            0.0, 0.0, 1.0, dz,
+            0.0, 0.0, 0.0, 1.0,
+        );
+
+        self.cubes[idx].raw = translation_matrix * &self.cubes[idx].raw;
+    }
+
+    fn escale(&mut self, idx: usize) {
+        let s = self.obj_transform.scale;
+        let scale_matrix = Matrix4::new(
+            s, 0.0, 0.0, 0.0,
+            0.0, s, 0.0, 0.0,
+            0.0, 0.0, s, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        );
+
+        self.cubes[idx].raw = scale_matrix * &self.cubes[idx].raw;
+    }
+
+    fn rotate_x(&mut self, idx: usize) {
+        let angle_rad = self.obj_transform.rotation.x.to_radians();
+        let rotation_matrix = Matrix4::new(
+            1.0, 0.0, 0.0, 0.0,
+            0.0, angle_rad.cos(), -angle_rad.sin(), 0.0,
+            0.0, angle_rad.sin(), angle_rad.cos(), 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        );
+
+        self.cubes[idx].raw = rotation_matrix * &self.cubes[idx].raw;
+    }
+
+    fn rotate_y(&mut self, idx: usize) {
+        let angle_rad = self.obj_transform.rotation.y.to_radians();
+        let rotation_matrix = Matrix4::new(
+            angle_rad.cos(), 0.0, angle_rad.sin(), 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            -angle_rad.sin(), 0.0, angle_rad.cos(), 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        );
+
+        self.cubes[idx].raw = rotation_matrix * &self.cubes[idx].raw;
+    }
+
+    fn rotate_z(&mut self, idx: usize) {
+        let angle_rad = self.obj_transform.rotation.z.to_radians();
+        let rotation_matrix = Matrix4::new(
+            angle_rad.cos(), -angle_rad.sin(), 0.0, 0.0,
+            angle_rad.sin(), angle_rad.cos(), 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        );
+
+        self.cubes[idx].raw = rotation_matrix * &self.cubes[idx].raw;
     }
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 1. Renderiza (CPU)
+       
+        // Renderiza a cena no buffer
         self.render_scene();
 
-        // 2. Converte para ColorImage
-        // Nota: Clonar 800x600 a 60FPS é "ok" em desktop, mas otimizações existem se precisar.
         let image = ColorImage {
             size: [self.width, self.height],
             source_size: Vec2::new(self.width as f32, self.height as f32),
-            pixels: self.pixels.clone(), 
+            pixels: self.pixels.clone(),
         };
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Teste do Rasterizador");
+        // --- 2. LÓGICA DE HOVER / CLICK ---
+        if let Some(mouse_pos) = self.mouse_in_buffer 
+        && !self.selected_cube_index.is_some() 
+        {
+            // Calcula qual objeto está sob o mouse
+            self.hovered_cube_index = self.check_hover(mouse_pos);
 
-            // 3. Gerencia a Textura na GPU
-            let texture = self.texture.get_or_insert_with(|| {
-                // Carrega inicial
-                ui.ctx().load_texture(
-                    "framebuffer",
-                    image.clone(),
-                    egui::TextureOptions::NEAREST // NEAREST é melhor para pixel art/rasterizadores retro
-                )
+            if let Some(hov_index) = self.hovered_cube_index {
+                if ctx.input(|i| i.pointer.primary_clicked()) {
+                    self.selected_cube_index = Some(hov_index);
+                }
+            }
+        } else {
+            self.hovered_cube_index = None;
+        }
+
+        egui::SidePanel::left("props").resizable(false).show(ctx, |ui| {
+
+            // Botão para adicionar novo cubo
+            if ui.button("Adicionar Cubo").clicked() {
+                self.cubes.push(UCube::default());
+            }
+
+            ui.separator();
+
+            if let Some(idx) = self.selected_cube_index {
+                // Aqui mostramos os controles APENAS do cubo selecionado
+                ui.separator();
+                
+                ui.label("Translação (X, Y, Z):");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.obj_transform.position.x));
+                    ui.add(egui::DragValue::new(&mut self.obj_transform.position.y));
+                    ui.add(egui::DragValue::new(&mut self.obj_transform.position.z));
+                });
+
+                ui.label("Rotação (X, Y, Z):");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.obj_transform.rotation.x).suffix("°")); 
+                    ui.add(egui::DragValue::new(&mut self.obj_transform.rotation.y).suffix("°"));
+                    ui.add(egui::DragValue::new(&mut self.obj_transform.rotation.z).suffix("°"));
+                });
+
+                ui.label("Escala:");
+                ui.add(egui::Slider::new(&mut self.obj_transform.scale, 0.1..=5.0));
+                
+                ui.horizontal(|ui| {
+                    if ui.button("Transformar").clicked() {
+                        self.translate(idx);
+                        self.escale(idx);
+                        self.rotate_x(idx);
+                        self.rotate_y(idx);
+                        self.rotate_z(idx);
+                    }
+                    if ui.button("Cancelar").clicked() {
+                        self.obj_transform = ObjectTransform::default();
+                        self.selected_cube_index = None;
+                        self.hovered_cube_index = None;
+                    }
+                
             });
+            }
+            else {
+                ui.label("Nenhum objeto selecionado.");
+                ui.label("Clique em um cubo na tela para editar.");
+            }
 
-            // Atualiza os dados da textura existente
+            ui.heading("Controles da Cena");
+            
+            ui.separator();
+
+            ui.collapsing("Câmera", |ui| {
+                ui.label("VRP (X, Y, Z):");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.scene.vrp.x).speed(0.1));
+                    ui.add(egui::DragValue::new(&mut self.scene.vrp.y).speed(0.1));
+                    ui.add(egui::DragValue::new(&mut self.scene.vrp.z).speed(0.1));
+                });
+            });
+            ui.separator();
+
+            // 3. Iluminação
+            ui.collapsing("Luz", |ui| {
+                ui.label("Intensidade da Luz:");
+                ui.color_edit_button_rgb(&mut self.scene.i_lamp);
+                ui.separator();
+                ui.label("Cor Ambiente:");
+                ui.color_edit_button_rgb(&mut self.scene.i_amb);
+            });
+            
+            ui.add_space(20.0);
+
+            if ui.button("Resetar Cena").clicked() {
+                self.cubes.clear();
+                self.cubes.push(UCube::default());
+                self.obj_transform = ObjectTransform::default();
+                self.scene = SceneParams::default();
+                self.selected_cube_index = None;
+                self.hovered_cube_index = None;
+            }
+        });
+        
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // Renderiza a textura...
+            let texture = self.texture.get_or_insert_with(|| {
+                ui.ctx()
+                    .load_texture("framebuffer", image.clone(), egui::TextureOptions::NEAREST)
+            });
             texture.set(image, egui::TextureOptions::NEAREST);
 
-            // 4. Exibe a imagem
-            // Sized serve para garantir que a imagem ocupe o espaço correto na UI
-            ui.image((texture.id(), texture.size_vec2()));
+            let img_response = ui.image((texture.id(), texture.size_vec2()));
 
-            ui.label(format!("FPS: {:.1}", 1.0 / ctx.input(|i| i.stable_dt)));
-            ui.label("Se você vê um padrão colorido se movendo, o buffer está funcionando!");
+            // Verifica se o mouse está em cima da imagem renderizada
+            if let Some(pos) = img_response.hover_pos() {
+                // 'pos' é relativo à janela inteira.
+                // Precisamos converter para coordenadas relativas à imagem (0,0 no canto da imagem)
+                let rel_x = pos.x - img_response.rect.min.x;
+                let rel_y = pos.y - img_response.rect.min.y;
+
+                // Valida limites
+                if rel_x >= 0.0
+                    && rel_y >= 0.0
+                    && rel_x < self.width as f32
+                    && rel_y < self.height as f32
+                {
+                    self.mouse_in_buffer = Some([rel_x, rel_y]);
+                }
+            }
+            
         });
-
-        // Solicita renderização contínua (game loop)
-        ctx.request_repaint();
     }
 }
 
 fn main() -> eframe::Result {
-    // Aumentei o tamanho da janela inicial para caber o buffer de 800x600
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([850.0, 700.0])
+            .with_inner_size([1280.0, 650.0])
             .with_resizable(true),
         ..Default::default()
     };
-    
+
     eframe::run_native(
-        "Rasterizador CG",
+        "Modelador de Cubos 3D",
         options,
         Box::new(|cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            // IMPORTANTE: Chamar o new() aqui, não o default()
             Ok(Box::new(MyApp::new(cc)))
         }),
     )
