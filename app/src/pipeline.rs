@@ -144,7 +144,7 @@ fn calc_color(scene: &SceneParams, normal: Vector3<f32>, centroid: Vector3<f32>,
     let mut total_esp = one_by_one_prod(scene.i_lamp, material.ks);
     let vet_s = (scene.vrp - centroid).normalize();
 
-    // efeito especular é diferente no modelo Phong (usa vetor H)
+    // efeito especular é diferente no modelo Phong simplificado (usa vetor H)
     if phong {
         let vet_h = (vet_l + vet_s).normalize();
         let n_h = normal.dot(&vet_h);
@@ -259,7 +259,7 @@ fn fillpolly(face: &Face, scene: &SceneParams, selected: bool, material: &Materi
                 continue; // evita divisão por zero
             }
 
-            let x_start = a.x.ceil() as i32; 
+            let x_start = a.x.floor() as i32; 
             let x_end = b.x.floor() as i32;   
             
             let tz = (b.z - a.z) / variacao_x;

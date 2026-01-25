@@ -48,7 +48,7 @@ impl MyApp {
     }
 
     /// Função auxiliar que varre a cena para achar quem está sob o mouse
-    // A lógica consiste em verificar qual aresta (entre todos os cubos) está mais próxima do mouse
+    // A lógica consiste em verificar qual face possui a média de Z mais próxima do observador
     fn check_hover(&self, mouse_pos: [f32; 2]) -> Option<usize> {
         let mut found_idx = None;
         let mut min_avg = f32::INFINITY;
@@ -69,25 +69,7 @@ impl MyApp {
                     found_idx = Some(idx);
                 }
 
-                // for i in 0..face.vertices.len() {
-                //     let x1 = face.vertices[i].cords.x;
-                //     let y1 = face.vertices[i].cords.y;
-                //     let x2 = face.vertices[(i + 1) % face.vertices.len()].cords.x;
-                //     let y2 = face.vertices[(i + 1) % face.vertices.len()].cords.y;
-
-                //     // Calcula a distância do ponto até a aresta atual
-                //     let distance = point_to_edge_distance(
-                //         [px, py],
-                //         [x1, y1],
-                //         [x2, y2],
-                //     );
-
-                //     if distance < min_distance {
-                //         min_distance = distance;
-                //         found_idx = Some(idx);
-                //     }
-                // }
-                }
+            }
 
         }
         found_idx
@@ -115,18 +97,7 @@ impl MyApp {
     }
 
     fn translate(&mut self, idx: usize) {
-        let dx = self.obj_transform.position.x;
-        let dy = self.obj_transform.position.y;
-        let dz = self.obj_transform.position.z;
-
-        let translation_matrix = Matrix4::new(
-            1.0, 0.0, 0.0, dx,
-            0.0, 1.0, 0.0, dy,
-            0.0, 0.0, 1.0, dz,
-            0.0, 0.0, 0.0, 1.0,
-        );
-
-        self.cubes[idx].raw = translation_matrix * &self.cubes[idx].raw;
+        self.cubes[idx].translate(self.obj_transform.position);
     }
 
     fn escale(&mut self, idx: usize) {
@@ -138,7 +109,11 @@ impl MyApp {
             0.0, 0.0, 0.0, 1.0,
         );
 
+        let centroid = self.cubes[idx].centroid();
+
+        self.cubes[idx].translate(-centroid);
         self.cubes[idx].raw = scale_matrix * &self.cubes[idx].raw;
+        self.cubes[idx].translate(centroid);
     }
 
     fn rotate_x(&mut self, idx: usize) {
@@ -150,7 +125,11 @@ impl MyApp {
             0.0, 0.0, 0.0, 1.0,
         );
 
+        let centroid = self.cubes[idx].centroid();
+
+        self.cubes[idx].translate(-centroid);
         self.cubes[idx].raw = rotation_matrix * &self.cubes[idx].raw;
+        self.cubes[idx].translate(centroid);    
     }
 
     fn rotate_y(&mut self, idx: usize) {
@@ -162,9 +141,12 @@ impl MyApp {
             0.0, 0.0, 0.0, 1.0,
         );
 
-        self.cubes[idx].raw = rotation_matrix * &self.cubes[idx].raw;
-    }
+        let centroid = self.cubes[idx].centroid();
 
+        self.cubes[idx].translate(-centroid);
+        self.cubes[idx].raw = rotation_matrix * &self.cubes[idx].raw;
+        self.cubes[idx].translate(centroid);    
+    }
     fn rotate_z(&mut self, idx: usize) {
         let angle_rad = self.obj_transform.rotation.z.to_radians();
         let rotation_matrix = Matrix4::new(
@@ -174,7 +156,11 @@ impl MyApp {
             0.0, 0.0, 0.0, 1.0,
         );
 
+        let centroid = self.cubes[idx].centroid();
+
+        self.cubes[idx].translate(-centroid);
         self.cubes[idx].raw = rotation_matrix * &self.cubes[idx].raw;
+        self.cubes[idx].translate(centroid);  
     }
 }
 
@@ -255,6 +241,8 @@ impl eframe::App for MyApp {
                 ui.color_edit_button_rgb(&mut self.cubes[idx].params.kd);
                 ui.label("Ks (Especular):");
                 ui.color_edit_button_rgb(&mut self.cubes[idx].params.ks);
+                ui.label("Expoente de Brilho (n):");
+                ui.add(egui::DragValue::new(&mut self.cubes[idx].params.n).speed(0.1).range(1.0..=100.0));
                 
                 ui.separator();
 
@@ -379,10 +367,14 @@ impl eframe::App for MyApp {
             });
             texture.set(image, egui::TextureOptions::NEAREST);
 
-            // ui.add_space(20.0);
+            
 
             let img_response = ui.image((texture.id(), texture.size_vec2()));
 
+            if !ui.ui_contains_pointer() {
+                self.mouse_in_buffer = None; // reseta se o mouse sair da área
+            }
+            
             // Verifica se o mouse está em cima da imagem renderizada
             if let Some(pos) = img_response.hover_pos() {
                 // 'pos' é relativo à janela inteira.
@@ -397,10 +389,8 @@ impl eframe::App for MyApp {
                     && rel_y < HEIGHT as f32
                 {
                     self.mouse_in_buffer = Some([rel_x, rel_y]);
-                } 
-                
-            }
-            
+                }   
+            } 
         });
     }
 }

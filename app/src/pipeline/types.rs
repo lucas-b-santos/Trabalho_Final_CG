@@ -122,6 +122,27 @@ impl Default for UCube {
     }
 }
 
+impl UCube {
+    pub fn centroid(&self) -> Vector3<f32> {
+        let mut centroid = Vector3::new(0.0, 0.0, 0.0);
+        for i in 0..8 {
+            centroid.x += self.raw[(0, i)];
+            centroid.y += self.raw[(1, i)];
+            centroid.z += self.raw[(2, i)];
+        }
+        centroid /= 8.0;
+        centroid
+    }
+
+    pub fn translate(&mut self, translation: Vector3<f32>) {
+        for i in 0..8 {
+            self.raw[(0, i)] += translation.x;
+            self.raw[(1, i)] += translation.y;
+            self.raw[(2, i)] += translation.z;
+        }
+    }
+}
+
 impl Default for SceneParams {
     fn default() -> Self {
         Self {
