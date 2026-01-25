@@ -1,53 +1,14 @@
 extern crate nalgebra as na;
+use eframe::egui;
+use na::{Matrix4, Vector3, Vector4};
 
-use std::{f32::INFINITY, u16};
+pub const WIDTH : usize = 1251;
+pub const HEIGHT : usize = 851;
 
-use na::{Matrix4, SMatrix, Vector3, Vector4};
+pub mod types;
+use types::{Vertex, Face, ScanlineEntry, RawObj, SceneParams, Material, UCube};
 
-macro_rules! value {
-    () => {
-        3.0
-    };
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Vertex { 
-    cords: Vector4<f32>, // cordenadas homogêneas do vértice
-    normal: Vector3<f32>, // vetor normal associado ao vértice
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SVertex { // vértices em SRT
-    cords: Vector3<u16>, // (X, Y, Z) do vértice na SRT
-    normal: Vector3<f32>, // vetor normal associado ao vértice
-}
-
-struct Face {
-    vertices: Vec<Vertex>, // vértices que compõem a face
-    normal: Vector3<f32>,  // vetor normal da face
-    centroid: Vector3<f32>, // centroide da face
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ScanlineEntry {
-    x: f32,          // coordenada x do ponto na scanline
-    z: f32,          // coordenada z do ponto na scanline
-    normal: Vector3<f32>, // vetor normal no ponto
-}
-
-type RawObj = SMatrix<f32, 4, 8>; // Matriz 4x8 para armazenar os pontos do objeto
-
-struct ShadingInfo {
-    lamp_pos: Vector3<f32>, // Posição da lâmpada
-    i_lamp: Vector3<f32>,   // Intensidade da lâmpada
-    i_amb: Vector3<f32>,    // Intensidade da luz ambiente
-    ka: Vector3<f32>, // Coeficiente de reflexão ambiente
-    kd: Vector3<f32>, // Coeficiente de reflexão difusa
-    ks: Vector3<f32>, // Coeficiente de reflexão especular
-    n: f32,           // Exponente de brilho especular
-}
-
-// Função genérica que recorta um polígono contra UM plano definido por 'boundary_check'
+/// Função genérica que recorta um polígono contra UM plano definido por 'boundary_check'
 fn clip_against_plane<F>(vertices: &[Vertex], boundary_check: F) -> Vec<Vertex>
 where
     F: Fn(Vector4<f32>) -> f32, // Retorna > 0 se dentro, < 0 se fora
@@ -113,7 +74,9 @@ where
     output_list
 }
 
-// Função Principal de Recorte
+/// Aplica Sutherland-Hodgman e retorna o polígono recortado
+// O conceito de boundary_check é usado para definir os 6 planos de recorte
+// Isto se baseia na matemática do volume de visão canônico (Alvy Ray Smith)
 fn sutherland_hodgman(
     poly: &[Vertex],
     near: f32, 
@@ -143,6 +106,7 @@ fn sutherland_hodgman(
     poly
 }
 
+/// Cria um vértice a partir da matriz bruta e normais dos vértices
 fn create_vertex(index: usize, raw_obj: &RawObj, normals: &[Vector3<f32>; 8]) -> Vertex {
     Vertex {
         cords: Vector4::new(
@@ -155,35 +119,37 @@ fn create_vertex(index: usize, raw_obj: &RawObj, normals: &[Vector3<f32>; 8]) ->
     }
 }
 
-fn one_by_one_prod(a: Vector3<f32>, b: Vector3<f32>) -> Vector3<f32> {
+/// Produto componente a componente entre dois vetores 3D
+fn one_by_one_prod(a: [f32; 3], b: [f32; 3]) -> Vector3<f32> {
     Vector3::new(
-        a.x * b.x,
-        a.y * b.y,
-        a.z * b.z,
+        a[0] * b[0],
+        a[1] * b[1],
+        a[2] * b[2],
     )
 }
 
-fn calc_color(vrp: Vector3<f32>, normal: Vector3<f32>, centroid: Vector3<f32>, shd_info: &ShadingInfo, phong: bool) -> Vector3<f32> {
-    let mut total_intensity = one_by_one_prod(shd_info.i_amb, shd_info.ka);
+/// Calcula a cor de um ponto baseado no modelo de iluminação informado
+fn calc_color(scene: &SceneParams, normal: Vector3<f32>, centroid: Vector3<f32>, material: &Material, phong: bool) -> Vector3<f32> {
+    let mut total_intensity = one_by_one_prod(scene.i_amb, material.ka);
 
-    let vet_l = (shd_info.lamp_pos - centroid).normalize();
+    let vet_l = (scene.lamp_pos - centroid).normalize();
     let n_l = normal.dot(&vet_l);
 
     if n_l < 0.0 { return total_intensity; } // não há efeito difuso
 
-    let total_dif = one_by_one_prod(shd_info.i_lamp, shd_info.kd) * n_l;
+    let total_dif = one_by_one_prod(scene.i_lamp, material.kd) * n_l;
 
     total_intensity += total_dif;
 
-    let mut total_esp = one_by_one_prod(shd_info.i_lamp, shd_info.ks);
-    let vet_s = (vrp - centroid).normalize();
+    let mut total_esp = one_by_one_prod(scene.i_lamp, material.ks);
+    let vet_s = (scene.vrp - centroid).normalize();
 
     // efeito especular é diferente no modelo Phong (usa vetor H)
     if phong {
         let vet_h = (vet_l + vet_s).normalize();
         let n_h = normal.dot(&vet_h);
         if n_h < 0.0 { return total_intensity; } // não há efeito especular
-        total_esp = total_esp * n_h.powf(shd_info.n);
+        total_esp = total_esp * n_h.powf(material.n);
         total_intensity += total_esp;
         return total_intensity;
     }
@@ -194,13 +160,14 @@ fn calc_color(vrp: Vector3<f32>, normal: Vector3<f32>, centroid: Vector3<f32>, s
 
     if r_s < 0.0 { return total_intensity; } // não há efeito especular
 
-    total_esp = total_esp * r_s.powf(shd_info.n);
+    total_esp = total_esp * r_s.powf(material.n);
 
     total_intensity += total_esp;   
     total_intensity
 }
 
-fn fillpolly(face: &Face, vrp: Vector3<f32>, shd_info: &ShadingInfo) {
+/// Preenche um polígono no buffer de imagem usando o algoritmo de scanline
+fn fillpolly(face: &Face, scene: &SceneParams, selected: bool, material: &Material, buffer: &mut[egui::Color32], z_buffer: &mut [u16], phong: bool) {
 
     let polygon = &face.vertices;
 
@@ -211,13 +178,11 @@ fn fillpolly(face: &Face, vrp: Vector3<f32>, shd_info: &ShadingInfo) {
     let y_min_poly = y_cords.iter().min().cloned().unwrap_or(0);
     let y_max_poly = y_cords.iter().max().cloned().unwrap_or(0);
 
-    println!("Y Min: {}, Y Max: {}", y_min_poly, y_max_poly);
-
     // calcula o número de scanlines
     let ns = y_max_poly - y_min_poly; 
 
     // cria uma lista de scanlines, cada scanline é uma lista de pontos
-    // cada ponto é um objeto com coordenadas x e cor RGB
+    // cada ponto é um objeto com x, z e vetor normal interpolados
     let mut scanlines = vec![Vec::<ScanlineEntry>::with_capacity(5); ns];
 
     // Para cada aresta do polígono, calculamos os pontos de cada scanline
@@ -234,6 +199,7 @@ fn fillpolly(face: &Face, vrp: Vector3<f32>, shd_info: &ShadingInfo) {
         // Verifica se a aresta é horizontal, se for, pula para a próxima iteração
         if edge[0].cords.y == edge[1].cords.y { continue; }
 
+        // necessário ordenar pela coordenada Y (de menor para maior)
         if a.cords.y > b.cords.y {
             edge.swap(0, 1);
         }
@@ -299,20 +265,47 @@ fn fillpolly(face: &Face, vrp: Vector3<f32>, shd_info: &ShadingInfo) {
             let tz = (b.z - a.z) / variacao_x;
             let tnormal = (b.normal - a.normal) / variacao_x;
 
-            // 3. PRE-STEPPING (O pulo do gato)
             // Calculamos quanto "andamos" do ponto real (a.x) até o primeiro pixel (x_start)
             let dx_prestep = (x_start as f32) - a.x;
 
-            // Ajustamos os valores iniciais com base nesse "pulinho"
+            // Ajustamos os valores iniciais com base nesse "pulo"
             let mut current_z = a.z + (tz * dx_prestep);
             let mut current_normal = a.normal + (tnormal * dx_prestep);
 
             for iii in x_start..x_end {
+                let idx = current_y * WIDTH + iii as usize;
+                let z_value = current_z as u16;
 
-                // comparar current_z com o valor no z-buffer
-                // se for menor:
-                // atualizar o z-buffer
-                // calcular cor (com current_normal) e atualizar color buffer
+                if z_buffer[idx] > z_value {
+                    let color = 
+                        if selected {
+                            Vector3::new(255.0, 0.0, 0.0) // vermelho para seleção
+                        } 
+                        else
+                        if phong { calc_color(
+                            scene, 
+                            current_normal.normalize(), 
+                            face.centroid, 
+                            material,
+                            true // usa modelo Phong
+                        ) * 255.0 } 
+                        else { calc_color(
+                            scene, 
+                            face.normal, 
+                            face.centroid, 
+                            material,
+                            false // modelo constante
+                        ) * 255.0 
+                    };
+
+                    buffer[idx] = egui::Color32::from_rgb(
+                        color.x as u8,
+                        color.y as u8,
+                        color.z as u8,
+                    );
+
+                    z_buffer[idx] = z_value;
+                }
 
                 // incrementa com as variações calculadas
                 current_z += tz;
@@ -327,14 +320,15 @@ fn fillpolly(face: &Face, vrp: Vector3<f32>, shd_info: &ShadingInfo) {
 
 }
 
+/// Verifica se a face está visível 
 fn is_face_visible(normal: Vector3<f32>, centroid: Vector3<f32>, vrp: Vector3<f32>) -> bool {
     // o: vetor centroide->vrp (normalizado)
     let o = (vrp - centroid).normalize();
     o.dot(&normal) > 0.0    
 }
 
-
-fn main() {
+/// Recebe um cubo no SRU, aplica o pipeline nele, renderiza as faces e as retorna (em SRT)
+pub fn render_cube(buffer: &mut [egui::Color32], z_buffer: &mut [u16], scene: &SceneParams, obj: &UCube, selected: bool, phong: bool) -> Vec<Face> {
 
     // Definição das faces do cubo (6 faces, cada face com 4 vértices)
     // deve ser convencionado algum sentido para os vértices das faces
@@ -348,31 +342,13 @@ fn main() {
         [1, 2, 6, 5],
     ];
 
-    // faces e edges indexam as colunas na matriz de pontos (0 - 7)
-    // este é o formato homogêneo, então cada coluna é um ponto na forma (x, y, z, h)
-    // let points = Points::from_row_slice(&[
-    //     -1.0,  1.0,  1.0, -1.0, -1.0,  1.0,  1.0, -1.0, 
-    //     -1.0, -1.0,  1.0,  1.0, -1.0, -1.0,  1.0,  1.0,
-    //     -1.0, -1.0, -1.0, -1.0,  1.0,  1.0,  1.0,  1.0,
-    //      1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,
-    // ]);
-
-    let raw_obj = RawObj::from_row_slice(&[
-        -value!(),  value!(),  value!(), -value!(), -value!(),  value!(),  value!(), -value!(), 
-        -value!(), -value!(),  value!(),  value!(), -value!(), -value!(),  value!(),  value!(),
-        -value!(), -value!(), -value!(), -value!(),  value!(),  value!(),  value!(),  value!(),
-         1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0,
-    ]);
-
-    // return;
-
     let centroids = faces.map(|face| {
     face.iter()
         // Transforma cada índice em um Vector3
         .map(|&index| Vector3::new(
-            raw_obj[(0, index)], 
-            raw_obj[(1, index)], 
-            raw_obj[(2, index)]
+            obj.raw[(0, index)], 
+            obj.raw[(1, index)], 
+            obj.raw[(2, index)]
         ))
         // Soma todos os vetores (o tipo ::<Vector3> ajuda o compilador a inferir)
         .sum::<Vector3<f32>>() / face.len() as f32
@@ -380,19 +356,19 @@ fn main() {
 
     let face_vectors = faces.map(|face| {
         let p1 = Vector3::new(
-            raw_obj[(0, face[0])],
-            raw_obj[(1, face[0])],
-            raw_obj[(2, face[0])],
+            obj.raw[(0, face[0])],
+            obj.raw[(1, face[0])],
+            obj.raw[(2, face[0])],
         );
         let p2 = Vector3::new(
-            raw_obj[(0, face[1])],
-            raw_obj[(1, face[1])],
-            raw_obj[(2, face[1])],
+            obj.raw[(0, face[1])],
+            obj.raw[(1, face[1])],
+            obj.raw[(2, face[1])],
         );
         let p3 = Vector3::new(
-            raw_obj[(0, face[2])],
-            raw_obj[(1, face[2])],
-            raw_obj[(2, face[2])],
+            obj.raw[(0, face[2])],
+            obj.raw[(1, face[2])],
+            obj.raw[(2, face[2])],
         );
 
         let a = p1 - p2;
@@ -400,14 +376,6 @@ fn main() {
 
         b.cross(&a).normalize()
     });
-
-    println!("Centroids: {:?}", centroids);
-    println!("Face Vectors: {:?}", face_vectors);
-
-    // SRC
-    let vrp = Vector3::new(15.0, 15.0, 15.0);
-    let view_up = Vector3::new(0.0, 1.0, 0.0);
-    let p = Vector3::new(0.0, 0.0, 0.0);
 
     let mut vertex_normals: [Vector3<f32>; 8] = [Vector3::new(0.0, 0.0, 0.0); 8];
  
@@ -418,39 +386,23 @@ fn main() {
                 normal_sum += face_vectors[i];
             }
         }
-
         vertex_normals[vertex] = normal_sum.normalize();
     }
-
-    // limites viewport 
-    let u_min = 100.0;
-    let v_min = 300.0;
-    let u_max = 1000.0;
-    let v_max = 900.0;
-
-    // Parâmetros de projeção
-    let su = 10.0;
-    let sv = 8.0;
-    let near = 20.0;
-    let far = 120.0;
-    let dp = 50.0;
-    let cu = 0.0;
-    let cv = 0.0;
 
     let z_max = u16::MAX as f32;
 
     // Cálculo dos vetores u, v, n
-    let n = p - vrp;
+    let n = scene.p - scene.vrp;
     let n = n.normalize();
-    let v = view_up - n * (view_up.dot(&n));
+    let v = scene.view_up - n * (scene.view_up.dot(&n));
     let v = v.normalize();
     let u = n.cross(&v);
 
     // translação para a origem de VRP
     let mat_a = Matrix4::new(
-        1.0, 0.0,  0.0, -vrp.x,
-        0.0, 1.0,  0.0, -vrp.y,
-        0.0, 0.0,  1.0, -vrp.z,
+        1.0, 0.0,  0.0, -scene.vrp.x,
+        0.0, 1.0,  0.0, -scene.vrp.y,
+        0.0, 0.0,  1.0, -scene.vrp.z,
         0.0, 0.0,  0.0, 1.0
     );
 
@@ -464,101 +416,88 @@ fn main() {
 
     // translação para alinhar o centro do projection plane
     let mat_c = Matrix4::new(
-        1.0, 0.0, -cu/dp, 0.0,
-        0.0, 1.0, -cv/dp, 0.0,
+        1.0, 0.0, -scene.cu/scene.dp, 0.0,
+        0.0, 1.0, -scene.cv/scene.dp, 0.0,
         0.0, 0.0, 1.0, 0.0,
         0.0, 0.0, 0.0, 1.0
     );
 
     // escalar para o volume de visão canônico
     let mat_d = Matrix4::new(
-        dp / (su * far), 0.0, 0.0, 0.0,
-        0.0,dp / (sv * far),0.0,0.0,
-        0.0, 0.0,1.0/far,  0.0,
+        scene.dp / (scene.su * scene.far), 0.0, 0.0, 0.0,
+        0.0,scene.dp / (scene.sv * scene.far),0.0,0.0,
+        0.0, 0.0,1.0/scene.far,  0.0,
         0.0, 0.0,  0.0, 1.0
     );
 
+    // matriz de projeção perspectiva
     let mat_p = Matrix4::new(
         1.0, 0.0, 0.0, 0.0,
         0.0, 1.0, 0.0, 0.0,
-        0.0, 0.0, far/(far - near),  -near/(far - near),
+        0.0, 0.0, scene.far/(scene.far - scene.near),  -scene.near/(scene.far - scene.near),
         0.0, 0.0, 1.0, 0.0
     );
 
     // matriz que leva para cordenadas de tela
     // optou-se por escalar z no intervalo [0, z_max]
     let mat_s = Matrix4::new(
-        (u_max - u_min) * 0.5, 0.0, 0.0,  (u_min + u_max + 1.0) * 0.5,
-        0.0, (v_min - v_max) * 0.5, 0.0,  (v_min + v_max + 1.0) * 0.5,
+        (scene.u_max - scene.u_min) * 0.5, 0.0, 0.0,  (scene.u_min + scene.u_max + 1.0) * 0.5,
+        0.0, (scene.v_min - scene.v_max) * 0.5, 0.0,  (scene.v_min + scene.v_max + 1.0) * 0.5,
         0.0, 0.0, z_max,  0.5,
         0.0, 0.0, 0.0,  1.0
     );
 
-    // a ideia é 
-    // 1. aplicar m_norm em raw_obj para obter os pontos no espaço normalizado
-    // 2. realizar o recorte com sutherland-hodgman
-    // 3. aplicar mat_p para projeção
-    // 4. dividir pelo fator homogêneo
-    // 5. aplicar a transformação que leva p/ srt (mat_s)
-
     // matriz que normaliza para o volume de visão canônico (alvy ray smith)
     let mat_norm = mat_d * mat_c * mat_b * mat_a;
 
-    let p1 = mat_norm * raw_obj;
+    // normalizamos os pontos do objeto para realizar recorte
+    let p1 = mat_norm * obj.raw;
 
     // criar um objeto de vetores nalgebra a partir da matriz bruta
     // isto é interessante para realizar cálculos de álgebra linear
-    let mut obj = Vec::<[Vertex; 4]>::with_capacity(6);
+    let mut final_obj = Vec::<[Vertex; 4]>::with_capacity(6);
     for face in faces {
         let v0 = create_vertex(face[0], &p1, &vertex_normals);
         let v1 = create_vertex(face[1], &p1, &vertex_normals);
         let v2 = create_vertex(face[2], &p1, &vertex_normals);
         let v3 = create_vertex(face[3], &p1, &vertex_normals);
 
-        obj.push([v0, v1, v2, v3]);
+        final_obj.push([v0, v1, v2, v3]);
     }
 
-    let shd_info = ShadingInfo {
-        lamp_pos: Vector3::<f32>::new(25.0, 15.0, 15.0),
-        i_lamp: Vector3::<f32>::new(255.0, 0.0, 255.0),
-        i_amb: Vector3::<f32>::new(255.0, 0.0, 255.0),
-        ka: Vector3::<f32>::new(0.0, 0.0, 255.0),
-        kd: Vector3::<f32>::new(0.0, 0.0, 255.0),
-        ks: Vector3::<f32>::new(0.0, 0.0, 255.0),
-        n: 2.0,
-    };
+    let mut screen_obj = Vec::<Face>::with_capacity(6);
 
     for face in 0..6 {
         let normal = face_vectors[face];
         let centroid = centroids[face];
 
-        if !is_face_visible(normal, centroid, vrp) {
+        // se a face não estiver visível, pula para a próxima
+        if !is_face_visible(normal, centroid, scene.vrp) {
             continue;
         }
 
-        let original_poly = &obj[face];
+        // uma face originalmente é um polígono com 4 vértices
+        let original_poly = &final_obj[face];
 
-        let mut clipped_poly = sutherland_hodgman(original_poly, near, far);
+        let mut clipped_poly = sutherland_hodgman(original_poly, scene.near, scene.far);
 
-        println!("Face {}: Original Vertices: {}, Clipped Vertices: {}", face, original_poly.len(), clipped_poly.len());
-
+        // para cada vértice do polígono recortado, aplicar as transformações finais
         for vertex in clipped_poly.iter_mut() {
-            vertex.cords = mat_p * vertex.cords;
+            vertex.cords = mat_p * vertex.cords; // projeção
             vertex.cords /= vertex.cords.w; // Divisão pelo fator homogêneo (ele usa w no lugar do h)
-            vertex.cords = mat_s * vertex.cords;   
+            vertex.cords = mat_s * vertex.cords; // transformação p/ coordenadas de tela
         }
 
-        println!(" Final Vertices after Projection and Screen Mapping: {:?}", clipped_poly);
         let face = Face {
             vertices: clipped_poly,
             normal: normal,
             centroid: centroid,
         };
 
-        fillpolly(&face, vrp, &shd_info);
+        fillpolly(&face, scene, selected, &obj.params, buffer, z_buffer, phong);
 
-        // let color = calc_color(vrp, normal, centroid, &shd_info);
-
-        // println!(" Total Intensity (R,G,B): {:?}, {:?}, {:?}", color.x as u8, color.y as u8, color.z as u8);
+        screen_obj.push(face);
     }
+
+    screen_obj
 }

@@ -1,30 +1,28 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 extern crate nalgebra as na;
+use core::f32;
+
 use na::{Matrix4};
 
 use eframe::egui;
 use egui::{ColorImage, TextureHandle, Vec2};
 
 pub mod pipeline;
-use pipeline::{HEIGHT, WIDTH, render};
+use pipeline::{HEIGHT, WIDTH, render_cube};
 use pipeline::types::{SceneParams, UCube, Face, ObjectTransform};
 
-pub mod utils;
-use utils::point_to_edge_distance;
-
 struct MyApp {
-    pixels: Vec<egui::Color32>,
-    z_buffer: Vec<u16>,
-    texture: Option<TextureHandle>,
-    width: usize,
-    height: usize,
-    cubes: Vec<UCube>,
-    s_cubes: Vec<Vec<Face>>,
+    pixels: Vec<egui::Color32>, // buffer de imagem
+    z_buffer: Vec<u16>, // z-buffer
+    texture: Option<TextureHandle>, // textura que o egui usa para mostrar o buffer
+    cubes: Vec<UCube>, // cubos na cena (em SRU)
+    s_cubes: Vec<Vec<Face>>, // cubos pós-processamento (em SRT)
     obj_transform: ObjectTransform, // Transformações do objeto
     selected_cube_index: Option<usize>, // Índice do cubo selecionado
     hovered_cube_index: Option<usize>,  // Índice do cubo sob o mouse
     scene: SceneParams,
+    use_phong: bool, // Se deve usar shading Phong ou não
     mouse_in_buffer: Option<[f32; 2]>, // Posição do mouse na área de renderização
 }
 
@@ -35,8 +33,6 @@ impl MyApp {
         cubes.push(UCube::default());
 
         Self {
-            width: WIDTH,
-            height: HEIGHT,
             mouse_in_buffer: None,
             obj_transform: ObjectTransform::default(),
             z_buffer: vec![u16::MAX; WIDTH * HEIGHT],
@@ -47,14 +43,15 @@ impl MyApp {
             selected_cube_index: None,
             hovered_cube_index: None,
             scene: SceneParams::default(),
+            use_phong: false,
         }
     }
 
-    // Função auxiliar que varre a cena para achar quem está sob o mouse
+    /// Função auxiliar que varre a cena para achar quem está sob o mouse
     // A lógica consiste em verificar qual aresta (entre todos os cubos) está mais próxima do mouse
     fn check_hover(&self, mouse_pos: [f32; 2]) -> Option<usize> {
         let mut found_idx = None;
-        let mut min_distance = f32::INFINITY;
+        let mut min_avg = f32::INFINITY;
 
         for (idx, cube) in self.s_cubes.iter().enumerate() {
 
@@ -65,24 +62,31 @@ impl MyApp {
                 // Se o ponto não estiver dentro da face, pula para a próxima
                 if !face.is_point_in(px, py) { continue; }
 
-                for i in 0..face.vertices.len() {
-                    let x1 = face.vertices[i].cords.x;
-                    let y1 = face.vertices[i].cords.y;
-                    let x2 = face.vertices[(i + 1) % face.vertices.len()].cords.x;
-                    let y2 = face.vertices[(i + 1) % face.vertices.len()].cords.y;
+                let z_avg = face.z_avg();
 
-                    // Calcula a distância do ponto até a aresta atual
-                    let distance = point_to_edge_distance(
-                        [px, py],
-                        [x1, y1],
-                        [x2, y2],
-                    );
-
-                    if distance < min_distance {
-                        min_distance = distance;
-                        found_idx = Some(idx);
-                    }
+                if min_avg > z_avg {
+                    min_avg = z_avg;
+                    found_idx = Some(idx);
                 }
+
+                // for i in 0..face.vertices.len() {
+                //     let x1 = face.vertices[i].cords.x;
+                //     let y1 = face.vertices[i].cords.y;
+                //     let x2 = face.vertices[(i + 1) % face.vertices.len()].cords.x;
+                //     let y2 = face.vertices[(i + 1) % face.vertices.len()].cords.y;
+
+                //     // Calcula a distância do ponto até a aresta atual
+                //     let distance = point_to_edge_distance(
+                //         [px, py],
+                //         [x1, y1],
+                //         [x2, y2],
+                //     );
+
+                //     if distance < min_distance {
+                //         min_distance = distance;
+                //         found_idx = Some(idx);
+                //     }
+                // }
                 }
 
         }
@@ -90,7 +94,7 @@ impl MyApp {
     }
 
     fn render_scene(&mut self) {
-        // 1. Limpar buffer
+        // Limpar buffer
         self.pixels.fill(egui::Color32::GRAY);
         self.z_buffer.fill(u16::MAX);
         self.s_cubes.clear();
@@ -98,19 +102,13 @@ impl MyApp {
         for (idx, cube) in self.cubes.iter().enumerate() {
             let mut selected = false;
 
-            if let Some(sel_idx) = self.selected_cube_index {
-                if sel_idx == idx {
-                    selected = true; // destaca o cubo selecionado
-                }
-            } 
-
             if let Some(hover_idx) = self.hovered_cube_index {
                 if hover_idx == idx {
                     selected = true; // destaca o cubo sob o mouse
                 }
             }
     
-            let screen_cube = render(&mut self.pixels, &mut self.z_buffer, &self.scene, cube, selected, true);
+            let screen_cube = render_cube(&mut self.pixels, &mut self.z_buffer, &self.scene, cube, selected, self.use_phong);
             self.s_cubes.push(screen_cube);
         }
 
@@ -186,13 +184,14 @@ impl eframe::App for MyApp {
         // Renderiza a cena no buffer
         self.render_scene();
 
+        // Cria a imagem a partir do buffer de pixels (p/ o egui renderizar como textura)
         let image = ColorImage {
-            size: [self.width, self.height],
-            source_size: Vec2::new(self.width as f32, self.height as f32),
+            size: [WIDTH, HEIGHT],
+            source_size: Vec2::new(WIDTH as f32, HEIGHT as f32),
             pixels: self.pixels.clone(),
         };
 
-        // --- 2. LÓGICA DE HOVER / CLICK ---
+        // LÓGICA DE HOVER / CLICK ---
         if let Some(mouse_pos) = self.mouse_in_buffer 
         && !self.selected_cube_index.is_some() 
         {
@@ -218,9 +217,6 @@ impl eframe::App for MyApp {
             ui.separator();
 
             if let Some(idx) = self.selected_cube_index {
-                // Aqui mostramos os controles APENAS do cubo selecionado
-                ui.separator();
-                
                 ui.label("Translação (X, Y, Z):");
                 ui.horizontal(|ui| {
                     ui.add(egui::DragValue::new(&mut self.obj_transform.position.x));
@@ -237,52 +233,133 @@ impl eframe::App for MyApp {
 
                 ui.label("Escala:");
                 ui.add(egui::Slider::new(&mut self.obj_transform.scale, 0.1..=5.0));
-                
+
                 ui.horizontal(|ui| {
-                    if ui.button("Transformar").clicked() {
+                    if ui.button("Transformar Objeto").clicked() {
                         self.translate(idx);
                         self.escale(idx);
                         self.rotate_x(idx);
                         self.rotate_y(idx);
                         self.rotate_z(idx);
                     }
+                    if ui.button("Resetar").clicked() {
+                        self.obj_transform = ObjectTransform::default();
+                    }
+                });
+                
+                ui.separator();
+
+                ui.label("Ka (Ambiente):");
+                ui.color_edit_button_rgb(&mut self.cubes[idx].params.ka);
+                ui.label("Kd (Difusa):");
+                ui.color_edit_button_rgb(&mut self.cubes[idx].params.kd);
+                ui.label("Ks (Especular):");
+                ui.color_edit_button_rgb(&mut self.cubes[idx].params.ks);
+                
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    
                     if ui.button("Cancelar").clicked() {
                         self.obj_transform = ObjectTransform::default();
                         self.selected_cube_index = None;
                         self.hovered_cube_index = None;
                     }
                 
-            });
-            }
-            else {
+                    if ui.button("Remover Cubo").clicked() {
+                        self.cubes.remove(idx);
+                        self.obj_transform = ObjectTransform::default();
+                        self.selected_cube_index = None;
+                        self.hovered_cube_index = None;
+                    }
+                });
+            } else {
                 ui.label("Nenhum objeto selecionado.");
                 ui.label("Clique em um cubo na tela para editar.");
             }
-
-            ui.heading("Controles da Cena");
             
             ui.separator();
 
             ui.collapsing("Câmera", |ui| {
                 ui.label("VRP (X, Y, Z):");
                 ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut self.scene.vrp.x).speed(0.1));
-                    ui.add(egui::DragValue::new(&mut self.scene.vrp.y).speed(0.1));
-                    ui.add(egui::DragValue::new(&mut self.scene.vrp.z).speed(0.1));
+                    ui.add(egui::DragValue::new(&mut self.scene.vrp.x));
+                    ui.add(egui::DragValue::new(&mut self.scene.vrp.y));
+                    ui.add(egui::DragValue::new(&mut self.scene.vrp.z));
+                });
+                ui.label("ViewUp (X, Y, Z):");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.scene.view_up.x));
+                    ui.add(egui::DragValue::new(&mut self.scene.view_up.y));
+                    ui.add(egui::DragValue::new(&mut self.scene.view_up.z));
+                });
+                ui.label("Ponto Focal (X, Y, Z):");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.scene.p.x));
+                    ui.add(egui::DragValue::new(&mut self.scene.p.y));
+                    ui.add(egui::DragValue::new(&mut self.scene.p.z));
                 });
             });
+
             ui.separator();
 
-            // 3. Iluminação
-            ui.collapsing("Luz", |ui| {
-                ui.label("Intensidade da Luz:");
+            ui.collapsing("Projeção", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Su:");
+                    ui.add(egui::DragValue::new(&mut self.scene.su));
+                    ui.label("Sv:");
+                    ui.add(egui::DragValue::new(&mut self.scene.sv));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Near:");
+                    ui.add(egui::DragValue::new(&mut self.scene.near));
+                    ui.label("Far:");
+                    ui.add(egui::DragValue::new(&mut self.scene.far));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Cu:");
+                    ui.add(egui::DragValue::new(&mut self.scene.cu));
+                    ui.label("Cv:");
+                    ui.add(egui::DragValue::new(&mut self.scene.cv));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Distância do Plano:");
+                    ui.add(egui::DragValue::new(&mut self.scene.dp));
+                });
+            });
+
+            ui.separator();
+
+            ui.collapsing("Tela", |ui| {
+                ui.label("Umin:");
+                ui.add(egui::Slider::new(&mut self.scene.u_min, 0.0..=WIDTH as f32 - 1.0 ).step_by(10.0));
+                ui.label("Umax:");
+                ui.add(egui::Slider::new(&mut self.scene.u_max, 0.0..=WIDTH as f32 - 1.0 ).step_by(10.0));
+                ui.label("Vmin:");
+                ui.add(egui::Slider::new(&mut self.scene.v_min, 0.0..=HEIGHT as f32 - 1.0 ).step_by(10.0));
+                ui.label("Vmax:");
+                ui.add(egui::Slider::new(&mut self.scene.v_max, 0.0..=HEIGHT as f32 - 1.0 ).step_by(10.0));
+            });
+
+            ui.separator();
+
+            ui.collapsing("Iluminação", |ui| {
+                ui.label("Posição da Lâmpada (X, Y, Z):");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.scene.lamp_pos.x));
+                    ui.add(egui::DragValue::new(&mut self.scene.lamp_pos.y));
+                    ui.add(egui::DragValue::new(&mut self.scene.lamp_pos.z));
+                });
+                ui.label("Intensidade da Lâmpada:");
                 ui.color_edit_button_rgb(&mut self.scene.i_lamp);
                 ui.separator();
-                ui.label("Cor Ambiente:");
+                ui.label("Luz Ambiente:");
                 ui.color_edit_button_rgb(&mut self.scene.i_amb);
             });
             
             ui.add_space(20.0);
+
+            ui.checkbox(&mut self.use_phong, "Modelo Phong");
 
             if ui.button("Resetar Cena").clicked() {
                 self.cubes.clear();
@@ -302,6 +379,8 @@ impl eframe::App for MyApp {
             });
             texture.set(image, egui::TextureOptions::NEAREST);
 
+            // ui.add_space(20.0);
+
             let img_response = ui.image((texture.id(), texture.size_vec2()));
 
             // Verifica se o mouse está em cima da imagem renderizada
@@ -314,11 +393,12 @@ impl eframe::App for MyApp {
                 // Valida limites
                 if rel_x >= 0.0
                     && rel_y >= 0.0
-                    && rel_x < self.width as f32
-                    && rel_y < self.height as f32
+                    && rel_x < WIDTH as f32
+                    && rel_y < HEIGHT as f32
                 {
                     self.mouse_in_buffer = Some([rel_x, rel_y]);
-                }
+                } 
+                
             }
             
         });
@@ -328,7 +408,7 @@ impl eframe::App for MyApp {
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 650.0])
+            .with_inner_size([1500.0, 900.0])
             .with_resizable(true),
         ..Default::default()
     };

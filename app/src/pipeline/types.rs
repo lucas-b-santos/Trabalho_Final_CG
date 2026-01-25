@@ -1,12 +1,16 @@
 extern crate nalgebra as na;
 use na::{SMatrix, Vector3, Vector4};
 
+pub use crate::pipeline::{HEIGHT, WIDTH};
+
+/// Um vértice com coordenadas homogêneas e vetor normal associado
 #[derive(Debug, Clone, Copy)]
 pub struct Vertex { 
     pub cords: Vector4<f32>, // cordenadas homogêneas do vértice
     pub normal: Vector3<f32>, // vetor normal associado ao vértice
 }
 
+/// Uma face composta por vértices, vetor normal e centroide
 pub struct Face {
     pub vertices: Vec<Vertex>, // vértices que compõem a face
     pub normal: Vector3<f32>,  // vetor normal da face
@@ -14,6 +18,15 @@ pub struct Face {
 }
 
 impl Face {
+    pub fn z_avg(&self) -> f32 {
+        let mut z_sum = 0.0;
+        for vertex in &self.vertices {
+            z_sum += vertex.cords.z;
+        }
+        z_sum / self.vertices.len() as f32
+    }
+
+    /// verifica se o ponto (x, y) em SRT está dentro da face
     pub fn is_point_in(&self, x: f32, y: f32) -> bool {
         let mut inside = false;
         if self.vertices.len() < 4 {
@@ -38,6 +51,7 @@ impl Face {
     }
 }
 
+/// Uma entrada na scanline com coordenadas e vetor normal
 #[derive(Debug, Clone, Copy)]
 pub struct ScanlineEntry {
     pub x: f32,          // coordenada x do ponto na scanline
@@ -45,8 +59,12 @@ pub struct ScanlineEntry {
     pub normal: Vector3<f32>, // vetor normal no ponto
 }
 
-pub type RawObj = SMatrix<f32, 4, 8>; // Matriz 4x8 para armazenar os pontos do objeto
+/// Matriz 4x8 para armazenar os pontos do objeto
+pub type RawObj = SMatrix<f32, 4, 8>; 
 
+type LinearRGB = [f32; 3]; // Representação linear de cor RGB (0.0 a 1.0)
+
+/// Parâmetros da cena
 pub struct SceneParams {
     pub vrp: Vector3<f32>,     // Ponto de vista
     pub view_up: Vector3<f32>, // Vetor view-up
@@ -67,17 +85,19 @@ pub struct SceneParams {
     pub cv: f32,
     
     pub lamp_pos: Vector3<f32>, // Posição da lâmpada
-    pub i_lamp: [f32; 3],   // Intensidade da lâmpada
-    pub i_amb: [f32; 3],    // Intensidade da luz ambiente
+    pub i_lamp: LinearRGB,   // Intensidade da lâmpada
+    pub i_amb: LinearRGB,    // Intensidade da luz ambiente
 }
 
+/// Material do objeto, composto dos coeficientes de reflexão (RGB) e o expoente de brilho
 pub struct Material {
-    pub ka: [f32; 3], // Coeficiente de reflexão ambiente
-    pub kd: [f32; 3], // Coeficiente de reflexão difusa
-    pub ks: [f32; 3], // Coeficiente de reflexão especular
+    pub ka: LinearRGB, // Coeficiente de reflexão ambiente
+    pub kd: LinearRGB, // Coeficiente de reflexão difusa
+    pub ks: LinearRGB, // Coeficiente de reflexão especular
     pub n: f32,           // Exponente de brilho especular
 }
 
+/// Um cubo no universo com seus parâmetros de material
 pub struct UCube {
     pub raw: RawObj,
     pub params: Material
@@ -107,11 +127,11 @@ impl Default for SceneParams {
         Self {
             vrp : Vector3::new(15.0, 15.0, 15.0),
             view_up: Vector3::new(0.0, 1.0, 0.0),
-            p: Vector3::new(0.0, 0.0, 0.0),
+            p: Vector3::new(1.0, 1.0, 1.0),
             u_min: 0.0,
             v_min: 0.0,
-            u_max: 800.0,
-            v_max: 600.0,
+            u_max: WIDTH as f32 - 1.0,
+            v_max: HEIGHT as f32 - 1.0,
             su: 10.0,
             sv: 8.0,
             near: 20.0,
@@ -126,6 +146,7 @@ impl Default for SceneParams {
     }
 }
 
+/// Parâmetros de transformação de um objeto
 pub struct ObjectTransform {
     pub position: Vector3<f32>,
     pub rotation: Vector3<f32>, 

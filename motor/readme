@@ -1,2 +1,0 @@
-para buildar: 
-wasm-pack build --target web
