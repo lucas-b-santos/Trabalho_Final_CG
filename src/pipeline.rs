@@ -6,7 +6,7 @@ pub const WIDTH : usize = 1251;
 pub const HEIGHT : usize = 851;
 
 pub mod types;
-use types::{Vertex, Face, ScanlineEntry, RawObj, SceneParams, Material, UCube};
+use types::{Vertex, Face, ConstantEntry, PhongEntry, RawObj, SceneParams, Material, UCube};
 
 /// Função genérica que recorta um polígono contra UM plano definido por 'boundary_check'
 fn clip_against_plane<F>(vertices: &[Vertex], boundary_check: F) -> Vec<Vertex>
@@ -129,6 +129,8 @@ fn one_by_one_prod(a: [f32; 3], b: [f32; 3]) -> Vector3<f32> {
 }
 
 /// Calcula a cor de um ponto baseado no modelo de iluminação informado
+// aqui, aproveitamos o fato de que o cálculo difuso e ambiente são iguais para ambos os modelos (Phong e Constante)
+// só usamos o parâmetro 'phong' para decidir o cálculo do especular
 fn calc_color(scene: &SceneParams, normal: Vector3<f32>, centroid: Vector3<f32>, material: &Material, phong: bool) -> Vector3<f32> {
     let mut total_intensity = one_by_one_prod(scene.i_amb, material.ka);
 
@@ -144,7 +146,6 @@ fn calc_color(scene: &SceneParams, normal: Vector3<f32>, centroid: Vector3<f32>,
     let mut total_esp = one_by_one_prod(scene.i_lamp, material.ks);
     let vet_s = (scene.vrp - centroid).normalize();
 
-    // efeito especular é diferente no modelo Phong simplificado (usa vetor H)
     if phong {
         let vet_h = (vet_l + vet_s).normalize();
         let n_h = normal.dot(&vet_h);
@@ -166,24 +167,163 @@ fn calc_color(scene: &SceneParams, normal: Vector3<f32>, centroid: Vector3<f32>,
     total_intensity
 }
 
-/// Preenche um polígono no buffer de imagem usando o algoritmo de scanline
-fn fillpolly(face: &Face, scene: &SceneParams, selected: bool, material: &Material, buffer: &mut[egui::Color32], z_buffer: &mut [u16], phong: bool) {
 
-    let polygon = &face.vertices;
-
+/// Retorna informações do polígono: y_min e número de scanlines
+fn get_poly_info(poly: &[Vertex]) -> (usize, usize) {
     // obtém lista de coordenadas Y do polígono
-    let y_cords = polygon.iter().map(|v| v.cords.y.round() as usize).collect::<Vec<usize>>(); 
+    let y_cords = poly.iter().map(|v| v.cords.y.round() as usize).collect::<Vec<usize>>(); 
     
     // obtém o menor e maior valor de Y do polígono
     let y_min_poly = y_cords.iter().min().cloned().unwrap_or(0);
     let y_max_poly = y_cords.iter().max().cloned().unwrap_or(0);
 
     // calcula o número de scanlines
-    let ns = y_max_poly - y_min_poly; 
+    let ns = y_max_poly - y_min_poly;   
+
+    (y_min_poly, ns)
+}
+
+fn fill_constant(face: &Face, scene: &SceneParams, selected: bool, material: &Material, buffer: &mut[egui::Color32], z_buffer: &mut [u16]) {
+    let polygon = &face.vertices;
+
+    let face_color;
+
+    if selected {
+        face_color = Vector3::new(255.0, 0.0, 0.0); // vermelho para seleção
+    } 
+    else {
+        face_color = calc_color(
+                            scene, 
+                            face.normal, 
+                            face.centroid, 
+                            material,
+                        false // usa modelo Phong
+                        ) * 255.0; // converter para escala 0-255
+    }
+                        
+    let (y_min_poly, ns) = get_poly_info(polygon);
 
     // cria uma lista de scanlines, cada scanline é uma lista de pontos
     // cada ponto é um objeto com x, z e vetor normal interpolados
-    let mut scanlines = vec![Vec::<ScanlineEntry>::with_capacity(5); ns];
+    let mut scanlines = vec![Vec::<ConstantEntry>::with_capacity(5); ns];
+
+    // Para cada aresta do polígono, calculamos os pontos de cada scanline
+    for i in 0..polygon.len() {
+
+        // Aresta é formada por dois pontos consecutivos do polígono (a e b)
+        let a = polygon[i];
+        // usamos índice circular p/ conectar o último ponto com o primeiro
+        let b = polygon[(i + 1) % polygon.len()];
+
+        // Aresta AB é uma lista de pontos [a, b]
+        let mut edge = [a, b];
+
+        // Verifica se a aresta é horizontal, se for, pula para a próxima iteração
+        if edge[0].cords.y == edge[1].cords.y { continue; }
+
+        // necessário ordenar pela coordenada Y (de menor para maior)
+        if a.cords.y > b.cords.y {
+            edge.swap(0, 1);
+        }
+       
+        let ymax = edge[1].cords.y; 
+        let ymin = edge[0].cords.y;
+        let xmax = edge[1].cords.x;
+        let xmin = edge[0].cords.x;
+        let zmin = edge[0].cords.z;
+        let zmax = edge[1].cords.z;
+
+        let variacao_y = ymax - ymin;
+
+        let tx = (xmax - xmin) / variacao_y;
+        let tz = (zmax - zmin) / variacao_y;
+
+        let mut current = ConstantEntry {
+            x: xmin,
+            z: zmin,
+        };
+
+        for ii in (ymin.round() as usize - y_min_poly)..(ymax.round() as usize - y_min_poly) {
+            scanlines[ii].push(current);
+
+            // incrementa as taxas
+            current.x += tx;
+            current.z += tz;
+        }
+    }
+    
+    // ordena os pontos de cada scanline por coordenada x
+    for i in 0..ns {
+        scanlines[i].sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap());
+    }
+
+    // Y inicial
+    let mut current_y = y_min_poly;
+
+    // Para cada scanline
+    for i in 0..ns {
+
+        // Para cada par de pontos na scanline
+        for ii in (0..scanlines[i].len()).step_by(2) {
+
+            // obtemos a e b, um intervalo que deve ser preenchido
+            let a = scanlines[i][ii];
+            let b = scanlines[i][ii + 1];
+            
+            let variacao_x = b.x - a.x;
+
+            if variacao_x == 0.0 {
+                continue; // evita divisão por zero
+            }
+            
+            let x_start = a.x.floor() as i16; 
+            let x_end = b.x.floor() as i16;   
+            
+            let tz = (b.z - a.z) / variacao_x;
+
+            // Calculamos quanto "andamos" do ponto real (a.x) até o primeiro pixel (x_start)
+            let dx_prestep = (x_start as f32) - a.x;
+
+            // Ajustamos os valores iniciais com base nesse "pulo"
+            let mut current_z = a.z + (tz * dx_prestep);
+
+            for iii in x_start..x_end {
+                let idx = current_y * WIDTH + iii as usize;
+                let z_value = current_z as u16;
+
+                if z_buffer[idx] > z_value {
+                    let color = face_color;
+
+                    buffer[idx] = egui::Color32::from_rgb(
+                        color.x as u8,
+                        color.y as u8,
+                        color.z as u8,
+                    );
+
+                    z_buffer[idx] = z_value;
+                }
+
+                // incrementa com as variações calculadas
+                current_z += tz;
+            }
+
+        }
+
+        current_y+=1;
+    }
+
+}
+
+
+fn fill_phong(face: &Face, scene: &SceneParams, selected: bool, material: &Material, buffer: &mut[egui::Color32], z_buffer: &mut [u16]) {
+
+    let polygon = &face.vertices;
+
+    let (y_min_poly, ns) = get_poly_info(polygon);
+
+    // cria uma lista de scanlines, cada scanline é uma lista de pontos
+    // cada ponto é um objeto com x, z e vetor normal interpolados
+    let mut scanlines = vec![Vec::<PhongEntry>::with_capacity(5); ns];
 
     // Para cada aresta do polígono, calculamos os pontos de cada scanline
     for i in 0..polygon.len() {
@@ -219,7 +359,7 @@ fn fillpolly(face: &Face, scene: &SceneParams, selected: bool, material: &Materi
         let tz = (zmax - zmin) / variacao_y;
         let tnormal = (normal_max - normal_min) / variacao_y;
 
-        let mut current = ScanlineEntry {
+        let mut current = PhongEntry {
             x: xmin,
             z: zmin,
             normal: normal_min,
@@ -258,9 +398,9 @@ fn fillpolly(face: &Face, scene: &SceneParams, selected: bool, material: &Materi
             if variacao_x == 0.0 {
                 continue; // evita divisão por zero
             }
-
-            let x_start = a.x.floor() as i32; 
-            let x_end = b.x.floor() as i32;   
+            
+            let x_start = a.x.floor() as i16; 
+            let x_end = b.x.floor() as i16;   
             
             let tz = (b.z - a.z) / variacao_x;
             let tnormal = (b.normal - a.normal) / variacao_x;
@@ -277,27 +417,19 @@ fn fillpolly(face: &Face, scene: &SceneParams, selected: bool, material: &Materi
                 let z_value = current_z as u16;
 
                 if z_buffer[idx] > z_value {
-                    let color = 
-                        if selected {
-                            Vector3::new(255.0, 0.0, 0.0) // vermelho para seleção
-                        } 
-                        else
-                        if phong { calc_color(
+                    let color = if selected {
+                        Vector3::new(255.0, 0.0, 0.0) // vermelho para seleção
+                    } 
+                    else {
+                        calc_color(
                             scene, 
                             current_normal.normalize(), 
                             face.centroid, 
                             material,
                             true // usa modelo Phong
-                        ) * 255.0 } 
-                        else { calc_color(
-                            scene, 
-                            face.normal, 
-                            face.centroid, 
-                            material,
-                            false // modelo constante
-                        ) * 255.0 
+                        ) * 255.0 // converter para escala 0-255
                     };
-
+                    
                     buffer[idx] = egui::Color32::from_rgb(
                         color.x as u8,
                         color.y as u8,
@@ -320,6 +452,8 @@ fn fillpolly(face: &Face, scene: &SceneParams, selected: bool, material: &Materi
 
 }
 
+
+
 /// Verifica se a face está visível 
 fn is_face_visible(normal: Vector3<f32>, centroid: Vector3<f32>, vrp: Vector3<f32>) -> bool {
     // o: vetor centroide->vrp (normalizado)
@@ -328,7 +462,7 @@ fn is_face_visible(normal: Vector3<f32>, centroid: Vector3<f32>, vrp: Vector3<f3
 }
 
 /// Recebe um cubo no SRU, aplica o pipeline nele, renderiza as faces e as retorna (em SRT)
-pub fn render_cube(buffer: &mut [egui::Color32], z_buffer: &mut [u16], scene: &SceneParams, obj: &UCube, selected: bool, phong: bool) -> Vec<Face> {
+pub fn render_cube(buffer: &mut [egui::Color32], z_buffer: &mut [u16], scene: &SceneParams, obj: &UCube, selected: bool) -> Vec<Face> {
 
     // Definição das faces do cubo (6 faces, cada face com 4 vértices)
     // deve ser convencionado algum sentido para os vértices das faces
@@ -342,6 +476,7 @@ pub fn render_cube(buffer: &mut [egui::Color32], z_buffer: &mut [u16], scene: &S
         [1, 2, 6, 5],
     ];
 
+    // cálculo dos centróides das faces
     let centroids = faces.map(|face| {
     face.iter()
         // Transforma cada índice em um Vector3
@@ -354,6 +489,7 @@ pub fn render_cube(buffer: &mut [egui::Color32], z_buffer: &mut [u16], scene: &S
         .sum::<Vector3<f32>>() / face.len() as f32
     });
 
+    // cálculo dos vetores normais das faces
     let face_vectors = faces.map(|face| {
         let p1 = Vector3::new(
             obj.raw[(0, face[0])],
@@ -389,6 +525,7 @@ pub fn render_cube(buffer: &mut [egui::Color32], z_buffer: &mut [u16], scene: &S
         vertex_normals[vertex] = normal_sum.normalize();
     }
 
+    // z varia de 0 a 65535 
     let z_max = u16::MAX as f32;
 
     // Cálculo dos vetores u, v, n
@@ -494,7 +631,12 @@ pub fn render_cube(buffer: &mut [egui::Color32], z_buffer: &mut [u16], scene: &S
             centroid: centroid,
         };
 
-        fillpolly(&face, scene, selected, &obj.params, buffer, z_buffer, phong);
+        if scene.use_phong {
+            fill_phong(&face, scene, selected, &obj.params, buffer, z_buffer);
+        }
+        else {
+            fill_constant(&face, scene, selected, &obj.params, buffer, z_buffer);
+        }
 
         screen_obj.push(face);
     }

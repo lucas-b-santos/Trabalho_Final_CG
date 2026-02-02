@@ -22,7 +22,6 @@ struct MyApp {
     selected_cube_index: Option<usize>, // Índice do cubo selecionado
     hovered_cube_index: Option<usize>,  // Índice do cubo sob o mouse
     scene: SceneParams,
-    use_phong: bool, // Se deve usar shading Phong ou não
     mouse_in_buffer: Option<[f32; 2]>, // Posição do mouse na área de renderização
 }
 
@@ -43,7 +42,6 @@ impl MyApp {
             selected_cube_index: None,
             hovered_cube_index: None,
             scene: SceneParams::default(),
-            use_phong: false,
         }
     }
 
@@ -90,7 +88,7 @@ impl MyApp {
                 }
             }
     
-            let screen_cube = render_cube(&mut self.pixels, &mut self.z_buffer, &self.scene, cube, selected, self.use_phong);
+            let screen_cube = render_cube(&mut self.pixels, &mut self.z_buffer, &self.scene, cube, selected);
             self.s_cubes.push(screen_cube);
         }
 
@@ -347,7 +345,7 @@ impl eframe::App for MyApp {
             
             ui.add_space(20.0);
 
-            ui.checkbox(&mut self.use_phong, "Modelo Phong");
+            ui.checkbox(&mut self.scene.use_phong, "Modelo Phong");
 
             if ui.button("Resetar Cena").clicked() {
                 self.cubes.clear();

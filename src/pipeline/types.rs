@@ -51,9 +51,16 @@ impl Face {
     }
 }
 
+/// Uma entrada na scanline com as coordenadas
+#[derive(Debug, Clone, Copy)]
+pub struct ConstantEntry {
+    pub x: f32,          // coordenada x do ponto na scanline
+    pub z: f32,          // coordenada z do ponto na scanline
+}
+
 /// Uma entrada na scanline com coordenadas e vetor normal
 #[derive(Debug, Clone, Copy)]
-pub struct ScanlineEntry {
+pub struct PhongEntry {
     pub x: f32,          // coordenada x do ponto na scanline
     pub z: f32,          // coordenada z do ponto na scanline
     pub normal: Vector3<f32>, // vetor normal no ponto
@@ -66,10 +73,11 @@ type LinearRGB = [f32; 3]; // Representação linear de cor RGB (0.0 a 1.0)
 
 /// Parâmetros da cena
 pub struct SceneParams {
-    pub vrp: Vector3<f32>,     // Ponto de vista
+    pub vrp: Vector3<f32>,     // Posição da câmera
     pub view_up: Vector3<f32>, // Vetor view-up
     pub p: Vector3<f32>,       // Ponto focal
    
+    // limites da viewport em SRT  
     pub u_min: f32,
     pub v_min: f32,
     pub u_max: f32,
@@ -87,6 +95,8 @@ pub struct SceneParams {
     pub lamp_pos: Vector3<f32>, // Posição da lâmpada
     pub i_lamp: LinearRGB,   // Intensidade da lâmpada
     pub i_amb: LinearRGB,    // Intensidade da luz ambiente
+
+    pub use_phong: bool, // Indica se o modelo de iluminação Phong deve ser usado
 }
 
 /// Material do objeto, composto dos coeficientes de reflexão (RGB) e o expoente de brilho
@@ -134,6 +144,7 @@ impl UCube {
         centroid
     }
 
+    // como a translação é usada em outras operações, resolvi colocar ela aqui
     pub fn translate(&mut self, translation: Vector3<f32>) {
         for i in 0..8 {
             self.raw[(0, i)] += translation.x;
@@ -163,7 +174,8 @@ impl Default for SceneParams {
             lamp_pos: Vector3::new(10.0, 10.0, 10.0),
             i_lamp: [1.0, 1.0, 1.0],
             i_amb: [0.2, 0.2, 0.2],
-        }
+            use_phong: true,
+            }
     }
 }
 
