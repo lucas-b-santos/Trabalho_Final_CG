@@ -183,6 +183,7 @@ fn get_poly_info(poly: &[Vertex]) -> (usize, usize) {
     (y_min_poly, ns)
 }
 
+/// Preenche o polígono usando o modelo de iluminação constante
 fn fill_constant(face: &Face, scene: &SceneParams, selected: bool, material: &Material, buffer: &mut[egui::Color32], z_buffer: &mut [u16]) {
     let polygon = &face.vertices;
 
@@ -192,13 +193,7 @@ fn fill_constant(face: &Face, scene: &SceneParams, selected: bool, material: &Ma
         face_color = Vector3::new(255.0, 0.0, 0.0); // vermelho para seleção
     } 
     else {
-        face_color = calc_color(
-                            scene, 
-                            face.normal, 
-                            face.centroid, 
-                            material,
-                        false // usa modelo Phong
-                        ) * 255.0; // converter para escala 0-255
+        face_color = calc_color(scene, face.normal, face.centroid, material,false) * 255.0; // converter para escala 0-255
     }
                         
     let (y_min_poly, ns) = get_poly_info(polygon);
@@ -314,7 +309,7 @@ fn fill_constant(face: &Face, scene: &SceneParams, selected: bool, material: &Ma
 
 }
 
-
+/// Preenche o polígono usando o modelo de iluminação Phong
 fn fill_phong(face: &Face, scene: &SceneParams, selected: bool, material: &Material, buffer: &mut[egui::Color32], z_buffer: &mut [u16]) {
 
     let polygon = &face.vertices;
@@ -423,7 +418,7 @@ fn fill_phong(face: &Face, scene: &SceneParams, selected: bool, material: &Mater
                     else {
                         calc_color(
                             scene, 
-                            current_normal.normalize(), 
+                            current_normal.normalize(), // necessário normalizar o vetor interpolado
                             face.centroid, 
                             material,
                             true // usa modelo Phong
