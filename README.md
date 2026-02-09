@@ -1,6 +1,5 @@
 # Documentação: Modelador de Cubos 3D
 
-
 ### Parâmetros de cena
 - **Câmera:** VRP, P, ViewUp, Cu, Cv, Su, Sv, dp, near, far
 - **Iluminação:**
