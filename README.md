@@ -1,5 +1,5 @@
 # Documentação: Modelador de Cubos 3D
-A construção deste modelador visou a aplicação dos conceitos aprendidos na disciplina de Computação Gráfica. A transformação Universo -> Tela segue o pipeline descrito no paper "The Viewing Transformation", de Alvy Ray Smith.
+Visou-se, na construção deste modelador, aplicar os conceitos aprendidos na disciplina de Computação Gráfica. A transformação Universo -> Tela segue o pipeline descrito no paper "The Viewing Transformation", de Alvy Ray Smith.
 
 ### Parâmetros de cena
 - **Câmera:** VRP, P, ViewUp, Cu, Cv, Su, Sv, dp, near, far
